@@ -27,7 +27,7 @@ const corsHeaders = {
 };
 
 const ADMIN_EMAIL  = 'faloyesamuel400@gmail.com';
-const LOGIN_URL    = 'https://stafffreshpress.lovable.app';
+const LOGIN_URL    = 'https://fresh-press-chi.vercel.app';
 const SYMBOLS      = ['!', '@', '#', '$', '%', '&'];
 
 interface StaffPayload {
