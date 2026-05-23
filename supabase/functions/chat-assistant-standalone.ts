@@ -478,13 +478,18 @@ Now respond.`;
     const requiresHuman  = parsed.requires_human ?? false;
     let   suggestedActions: any[] = Array.isArray(parsed.suggested_actions) ? parsed.suggested_actions : [];
 
-    // Auto-inject tracking action
+    // Strict suggested actions policy:
+    // 1. Always include Request Pickup for every message
+    if (!suggestedActions.some((a: any) => (a.url || '').includes('/request-pickup'))) {
+      suggestedActions.push({ label: 'Request Pickup', type: 'link', url: `${SITE_URL}/request-pickup` });
+    }
+    // 2. For tracking questions, also include Track Order
     if (detectedIntent === 'tracking' && !suggestedActions.some((a: any) => (a.url || '').includes('/track'))) {
       suggestedActions.push({ label: 'Track Order', type: 'link', url: `${SITE_URL}/track` });
     }
-    // Auto-inject request pickup action
-    if (['order', 'pricing', 'services'].includes(detectedIntent) && !suggestedActions.some((a: any) => (a.url || '').includes('/request-pickup'))) {
-      suggestedActions.push({ label: 'Request Pickup', type: 'link', url: `${SITE_URL}/request-pickup` });
+    // 3. For pricing/services questions, also include View Pricing
+    if (['pricing', 'services'].includes(detectedIntent) && !suggestedActions.some((a: any) => (a.url || '').includes('/pricing'))) {
+      suggestedActions.push({ label: 'View Pricing', type: 'link', url: `${SITE_URL}/pricing` });
     }
 
     // ── Step 9 — Save session, messages, and escalate (blocking to ensure save) ────────

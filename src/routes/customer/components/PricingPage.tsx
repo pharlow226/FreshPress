@@ -68,6 +68,7 @@ const PricingPage = () => {
   const [loading, setLoading]   = useState(false);
   const [error,   setError]     = useState<string | null>(null);
   const [minimumOrder, setMinimumOrder] = useState<number>(3000);
+  const [serviceAreas, setServiceAreas] = useState<string>('Lekki, Ikoyi and Victoria Island');
 
   useEffect(() => { fetchPricing(); }, []);
 
@@ -75,14 +76,22 @@ const PricingPage = () => {
     try {
       setLoading(true); setError(null);
       
-      // Fetch minimum order value dynamically from company_info
+      // Fetch minimum order and service areas from company_info
       const { data: companyData } = await supabase
         .from('company_info')
-        .select('minimum_order')
+        .select('minimum_order, service_areas')
         .limit(1)
         .single();
       if (companyData?.minimum_order) {
         setMinimumOrder(Number(companyData.minimum_order));
+      }
+      if (companyData?.service_areas) {
+        const parts = (companyData.service_areas as string).split(',').map((s: string) => s.trim());
+        let formatted: string;
+        if (parts.length <= 1) formatted = companyData.service_areas;
+        else if (parts.length === 2) formatted = parts.join(' & ');
+        else formatted = parts.slice(0, -1).join(', ') + ' and ' + parts[parts.length - 1];
+        setServiceAreas(formatted);
       }
 
       const { data, error: dbError } = await supabase
@@ -171,7 +180,7 @@ const PricingPage = () => {
         <ul className="space-y-1.5 text-[hsl(var(--amber))] text-sm">
           {[
             `Minimum order: \u20a6${minimumOrder.toLocaleString()}`,
-            'Free pickup & delivery within Lekki, Ikoyi and Victoria Island',
+            `Free pickup & delivery within ${serviceAreas}`,
             'Express service (24 hours): +20% surcharge',
             'Heavily stained items may attract additional charges',
           ].map(note => (
