@@ -21,7 +21,7 @@ const BREVO_KEY    = Deno.env.get('BREVO_API_KEY')      ?? '';
 const BREVO_SENDER = Deno.env.get('BREVO_SENDER_EMAIL') ?? 'noreply@freshpress.ng';
 const ADMIN_EMAIL  = Deno.env.get('ADMIN_EMAIL')        ?? 'faloyesamuel400@gmail.com';
 
-const SITE_URL         = 'https://freshpresslaundryservice.lovable.app';
+const SITE_URL         = 'https://fresh-press-chi.vercel.app';
 const WHATSAPP         = '+2348113143272';
 
 const CORS = {
@@ -50,6 +50,7 @@ function dbH(extra: Record<string, any> = {}): Record<string, string> {
 
   return headers;
 }
+
 
 // ── Error reply shape ─────────────────────────────────────────────────────────
 function errorReply(now: string) {
@@ -165,12 +166,12 @@ const TIME_SLOT_LABELS: Record<string, string> = {
   evening: 'Evening (4PM-7PM)',
 };
 
-function buildOrderInfo(orderRow: any | null, orderId: string | null, fetchError: string | null): string {
+function buildOrderInfo(orderRow: any | null, orderId: string | null, fetchError: boolean): string {
   if (!orderId) return JSON.stringify({ found: null, order_id: null });
   if (fetchError) {
     return JSON.stringify({
       found: null, fetchError: true,
-      message: `Order lookup failed: ${fetchError}. Direct customer to: ${SITE_URL}/track or WhatsApp: ${WHATSAPP}`,
+      message: `Order lookup failed due to a connection issue. Direct customer to: ${SITE_URL}/track or WhatsApp: ${WHATSAPP}`,
     });
   }
   if (!orderRow) {
@@ -378,7 +379,7 @@ Deno.serve(async (req: Request) => {
 
     // ── Step 6 — Fetch order by ID (tracking intent only) ──────────────────
     let orderRow: any = null;
-    let orderFetchError: string | null = null;
+    let orderFetchError = false;
 
     if (detectedIntent === 'tracking' && mentionedOrderId) {
       try {
@@ -390,13 +391,10 @@ Deno.serve(async (req: Request) => {
           const rows: any[] = await orderRes.json();
           orderRow = rows[0] ?? null;
         } else {
-          const errText = await orderRes.text();
-          console.error('[chat-assistant] order fetch non-ok status:', orderRes.status, errText);
-          orderFetchError = `HTTP ${orderRes.status}: ${errText}`;
+          orderFetchError = true;
         }
-      } catch (e) {
-        console.error('[chat-assistant] order fetch exception:', e);
-        orderFetchError = `Exception: ${e instanceof Error ? e.message : String(e)}`;
+      } catch {
+        orderFetchError = true;
       }
     }
 
@@ -541,7 +539,6 @@ Now respond.`;
       topic,
       confidence,
       timestamp: now,
-      debug_info: { orderInfo }
     }, { status: 200, headers: CORS });
 
   } catch (err: any) {
