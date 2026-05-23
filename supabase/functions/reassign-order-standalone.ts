@@ -187,7 +187,7 @@ Deno.serve(async (req: Request) => {
     //     method: 'POST',
     //     headers: { 'Content-Type': 'application/json', 'apikey': evoKey },
     //     body: JSON.stringify({ number: wa, textMessage: { text:
-    //       `Hi ${staff.full_name.split(' ')[0]}! Order *${orderId}* has been assigned to you by ${reassignedByName || 'Admin'}.\n\nCustomer: ${order.customer_name}\nAddress: ${order.address}\nPickup: ${fmtDate(order.pickup_date)}\nStatus: ${order.status}\n\nLogin to update: https://stafffreshpress.lovable.app`
+    //       `Hi ${staff.full_name.split(' ')[0]}! Order *${orderId}* has been assigned to you by ${reassignedByName || 'Admin'}.\n\nCustomer: ${order.customer_name}\nAddress: ${order.address}\nPickup: ${fmtDate(order.pickup_date)}\nStatus: ${order.status}\n\nLogin to update: https://fresh-press-chi.vercel.app`
     //     }}),
     //   }).catch(e => console.error('[reassign-order] WhatsApp failed:', e));
     // }
