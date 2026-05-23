@@ -129,7 +129,7 @@ function customerConfirmationEmail(p: {
   <tr><td style="background:#eef2ff;padding:16px 40px;text-align:center;border-bottom:1px solid #e0e7ff;">
     <p style="margin:0;font-size:11px;color:#6366f1;font-weight:700;letter-spacing:1px;text-transform:uppercase;">Your Order ID</p>
     <p style="margin:6px 0 0;font-size:28px;font-weight:900;color:#3b5bdb;font-family:monospace;letter-spacing:3px;">${p.orderId}</p>
-    <p style="margin:6px 0 0;font-size:12px;color:#94a3b8;">Track at: freshpresslaundryservice.lovable.app/track</p>
+    <p style="margin:6px 0 0;font-size:12px;color:#94a3b8;">Track at: fresh-press-chi.vercel.app/track</p>
   </td></tr>
   <tr><td style="padding:32px 40px;">
     <p style="margin:0 0 20px;font-size:15px;color:#1e293b;">Hi <strong>${p.customerName}</strong>,</p>
@@ -142,7 +142,7 @@ function customerConfirmationEmail(p: {
       </td></tr>`).join('')}
     </table>
     <div style="text-align:center;">
-      <a href="https://freshpresslaundryservice.lovable.app/track"
+      <a href="https://fresh-press-chi.vercel.app/track"
          style="display:inline-block;background:linear-gradient(135deg,#3b5bdb,#4c3d9e);color:#fff;font-size:14px;font-weight:700;padding:13px 28px;border-radius:10px;text-decoration:none;">
         Track My Order
       </a>
@@ -426,7 +426,7 @@ Deno.serve(async (req: Request) => {
     //   const msg =
     //     `Hello ${body.customer_name}! Your FreshPress order *${orderId}* is confirmed.\n\n` +
     //     `Pickup: *${fmtDate(body.pickup_date)}*\nTime: *${SLOTS[body.pickup_time_slot]}*\n` +
-    //     `Address: ${body.address}\n\nTrack: freshpresslaundryservice.lovable.app/track\n` +
+    //     `Address: ${body.address}\n\nTrack: fresh-press-chi.vercel.app/track\n` +
     //     `Questions? Call +234 811 314 3272`;
     //   await fetch(`${evoUrl}/message/sendText/${evoInst}`, {
     //     method: 'POST',
