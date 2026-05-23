@@ -21,7 +21,7 @@ const BREVO_KEY    = Deno.env.get('BREVO_API_KEY')      ?? '';
 const BREVO_SENDER = Deno.env.get('BREVO_SENDER_EMAIL') ?? 'noreply@freshpress.ng';
 const ADMIN_EMAIL  = Deno.env.get('ADMIN_EMAIL')        ?? 'faloyesamuel400@gmail.com';
 
-const SITE_URL         = 'https://freshpresslaundryservice.lovable.app';
+const SITE_URL         = 'https://fresh-press-chi.vercel.app';
 const WHATSAPP         = '+2348113143272';
 
 const CORS = {
