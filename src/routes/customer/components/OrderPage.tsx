@@ -1,4 +1,4 @@
-import { useState, type FormEvent, type ChangeEvent } from 'react';
+import { useState, useEffect, type FormEvent, type ChangeEvent } from 'react';
 import {
   Loader2, CheckCircle, Clock, Shield, Truck, Sparkles,
   User, Phone, Mail, MapPin, Calendar, AlignLeft, Package
@@ -6,6 +6,7 @@ import {
 import LoadingMessage from '@/components/shared/LoadingMessage';
 import { EDGE_FUNCTIONS } from '@/lib/webhooks';
 import { isValidPhone } from '@/lib/phone';
+import { supabase } from '@/lib/supabase';
 
 interface FormData {
   customerName: string; phone: string; email: string;
@@ -40,11 +41,11 @@ const Field = ({
 );
 
 // ── Trust sidebar items ────────────────────────────────────────────────────────
-const TRUST = [
-  { Icon: Truck,    title: 'Free Pickup & Delivery', desc: 'Across Lekki, Ikoyi & Victoria Island — no extra fee.' },
-  { Icon: Clock,    title: '48-Hour Turnaround',      desc: 'Standard orders returned within two days.' },
-  { Icon: Shield,   title: 'Fully Insured',           desc: 'Every item protected from pickup to delivery.' },
-  { Icon: Sparkles, title: 'Expert Finish',           desc: 'Professional steam press and careful handling.' },
+const TRUST_BASE = [
+  { Icon: Truck,    title: 'Free Pickup & Delivery', descTemplate: (areaList: string) => `Across ${areaList} — no extra fee.` },
+  { Icon: Clock,    title: '48-Hour Turnaround',      descTemplate: () => 'Standard orders returned within two days.' },
+  { Icon: Shield,   title: 'Fully Insured',           descTemplate: () => 'Every item protected from pickup to delivery.' },
+  { Icon: Sparkles, title: 'Expert Finish',           descTemplate: () => 'Professional steam press and careful handling.' },
 ];
 
 // ── Main component ────────────────────────────────────────────────────────────
@@ -56,7 +57,34 @@ const OrderPage = () => {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [orderResponse, setOrderResponse] = useState<OrderResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [firstArea, setFirstArea] = useState<string>('Lekki');
+  const [areaList, setAreaList] = useState<string>('Lekki, Ikoyi & Victoria Island');
   const today = new Date().toISOString().split('T')[0];
+
+  useEffect(() => {
+    const fetchServiceAreas = async () => {
+      try {
+        const { data } = await supabase
+          .from('company_info')
+          .select('service_areas')
+          .limit(1)
+          .single();
+        if (data?.service_areas) {
+          const parts = (data.service_areas as string).split(',').map((s: string) => s.trim());
+          if (parts.length > 0 && parts[0]) setFirstArea(parts[0]);
+          let formatted: string;
+          if (parts.length <= 1) formatted = data.service_areas;
+          else if (parts.length === 2) formatted = parts.join(' & ');
+          else formatted = parts.slice(0, -1).join(', ') + ' & ' + parts[parts.length - 1];
+          setAreaList(formatted);
+        }
+      } catch {
+        // Silently keep defaults
+      }
+    };
+    fetchServiceAreas();
+  }, []);
+
 
   const handleInputChange = (e: ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
     const { name, value } = e.target;
@@ -192,14 +220,14 @@ const OrderPage = () => {
 
         {/* Trust items */}
         <div className="space-y-3">
-          {TRUST.map(({ Icon, title, desc }) => (
+          {TRUST_BASE.map(({ Icon, title, descTemplate }) => (
             <div key={title} className="flex gap-4 items-start bg-white rounded-2xl p-4 border border-border shadow-sm hover:shadow-md transition-shadow">
               <div className="w-10 h-10 rounded-xl bg-[hsl(var(--brand-accent-light))] flex items-center justify-center shrink-0">
                 <Icon className="w-5 h-5 text-[hsl(var(--brand))]" />
               </div>
               <div>
                 <p className="font-bold text-sm text-foreground">{title}</p>
-                <p className="text-xs text-muted-foreground leading-relaxed mt-0.5">{desc}</p>
+                <p className="text-xs text-muted-foreground leading-relaxed mt-0.5">{descTemplate(areaList)}</p>
               </div>
             </div>
           ))}
@@ -266,7 +294,7 @@ const OrderPage = () => {
               <textarea
                 name="address" value={formData.address}
                 onChange={handleInputChange} rows={2}
-                placeholder="e.g., 123 Admiralty Way, Lekki Phase 1, Lagos"
+                placeholder={`e.g., 123 Admiralty Way, ${firstArea} Phase 1, Lagos`}
                 className={`${fieldClass} pl-10 pt-3 resize-none`} required
               />
             </Field>
