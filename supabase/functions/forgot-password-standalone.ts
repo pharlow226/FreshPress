@@ -21,7 +21,7 @@ const SERVICE_ROLE_KEY = Deno.env.get('SERVICE_ROLE_KEY')!;
 const BREVO_KEY        = Deno.env.get('BREVO_API_KEY')        ?? '';
 const BREVO_SENDER     = Deno.env.get('BREVO_SENDER_EMAIL')   ?? 'noreply@freshpress.ng';
 const RESET_SECRET     = Deno.env.get('RESET_SECRET')         ?? 'freshpress-reset-secret-2026';
-const STAFF_SITE_URL   = Deno.env.get('STAFF_SITE_URL')       ?? 'https://freshpresslaundryservice.lovable.app';
+const STAFF_SITE_URL   = Deno.env.get('STAFF_SITE_URL')       ?? 'https://fresh-press-chi.vercel.app';
 
 const CORS = {
   'Access-Control-Allow-Origin':  '*',
