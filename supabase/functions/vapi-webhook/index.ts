@@ -78,19 +78,24 @@ async function createPickupOrder(args: any) {
   const randomNum = Math.floor(100000 + Math.random() * 900000);
   const orderId = `LAU-${randomNum}`;
 
+  let validTimeSlot = 'morning';
+  const slotLower = (pickup_time_slot || '').toLowerCase();
+  if (slotLower.includes('afternoon') || slotLower.includes('12pm')) validTimeSlot = 'afternoon';
+  else if (slotLower.includes('evening') || slotLower.includes('3pm')) validTimeSlot = 'evening';
+
   const res = await fetch(`${SUPABASE_URL}/rest/v1/orders`, {
     method: 'POST',
     headers: dbH(),
     body: JSON.stringify({
       order_id: orderId,
       customer_name,
+      email: `voice_${phone.replace(/\D/g, '')}@freshpress.ng`,
       phone,
       address,
       pickup_date,
-      pickup_time_slot,
+      pickup_time_slot: validTimeSlot,
       status: 'pending',
-      payment_status: 'unpaid',
-      source: 'voice_ai'
+      payment_status: 'unpaid'
     })
   });
 
