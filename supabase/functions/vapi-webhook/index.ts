@@ -69,9 +69,9 @@ async function checkOrderStatus(args: any) {
 }
 
 async function createPickupOrder(args: any) {
-  const { customer_name, phone, address, pickup_date, pickup_time_slot } = args;
-  if (!customer_name || !phone || !address || !pickup_date || !pickup_time_slot) {
-    return "Missing required fields. Need name, phone, address, date, and time slot.";
+  const { customer_name, phone, email, address, pickup_date, pickup_time_slot } = args;
+  if (!customer_name || !phone || !email || !address || !pickup_date || !pickup_time_slot) {
+    return "Missing required fields. Need name, phone, email, address, date, and time slot.";
   }
 
   // Generate LAU-XXXXXX
@@ -89,7 +89,7 @@ async function createPickupOrder(args: any) {
     body: JSON.stringify({
       order_id: orderId,
       customer_name,
-      email: `voice_${phone.replace(/\D/g, '')}@freshpress.ng`,
+      email: email.toLowerCase().replace(/\s/g, ''),
       phone,
       address,
       pickup_date,
