@@ -8,6 +8,7 @@ import { Outlet, Link, useLocation, useNavigate } from 'react-router-dom';
 import { Sparkles, Truck, Shield, Award, Phone, Mail, MapPin } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import ChatWidget from '@/routes/customer/components/ChatWidget';
+import { VoiceWidget } from '@/routes/customer/components/VoiceWidget';
 
 const NAV_ITEMS = [
   { path: '/',               label: 'Home',           mobileLabel: 'Home' },
@@ -258,7 +259,8 @@ const CustomerLayout = () => {
         </div>
       </footer>
 
-      {/* Floating AI chat assistant */}
+      {/* Global Widgets */}
+      <VoiceWidget />
       <ChatWidget />
     </div>
   );
