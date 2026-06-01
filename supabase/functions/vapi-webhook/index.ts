@@ -38,7 +38,7 @@ async function getPricing(args: any) {
   for (const r of rows) {
     const cat = r.category || 'Other';
     if (!cats[cat]) cats[cat] = [];
-    cats[cat].push(`${r.service_name}: ₦${r.price}${r.unit ? ' per ' + r.unit : ''}`);
+    cats[cat].push(`${r.service_name}: ${r.price} Naira${r.unit ? ' per ' + r.unit : ''}`);
   }
   
   let resultStr = "Live Pricing Data:\n";
@@ -63,7 +63,7 @@ async function checkOrderStatus(args: any) {
     info += ` Scheduled for pickup on ${order.pickup_date} (${order.pickup_time_slot}).`;
     if (order.delay_reason) info += ` Note: Rescheduled due to ${order.delay_reason}.`;
   }
-  if (order.total_amount) info += ` Total amount is ₦${order.total_amount}.`;
+  if (order.total_amount) info += ` Total amount is ${order.total_amount} Naira.`;
   
   return info;
 }
