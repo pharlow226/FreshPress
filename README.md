@@ -1,140 +1,134 @@
-# 🧺 FreshPress — Premium Laundry Services
+# FreshPress Laundry Service
 
-FreshPress is a state-of-the-art, fully featured laundry service application tailored for Lagos, Nigeria. This repository represents the unified, merged codebase combining the **Customer-Facing Portal**, the **Admin/Staff Management Dashboard**, and the backend **Supabase Edge Functions** into a single, high-performance web application.
+A modern, full-stack web application built for FreshPress, a premium laundry and dry-cleaning service based in Lagos, Nigeria. The platform features a customer-facing portal for booking pickups, a secure staff dashboard for managing orders, and an AI-powered voice assistant ("Pressy") that handles customer inquiries and order creation over real-time audio.
 
----
+## 📋 Table of Contents
 
-## ✨ Features & Architecture
-
-The application is structured into three main modules:
-
-### 1. 🛒 Customer Portal
-- **Interactive Booking:** Customers can request pickups, select schedules (Morning/Afternoon/Evening), and enter pickup/delivery details.
-- **Dynamic Order Tracking:** Live order timeline with progress updates (Order Placed ➜ Picked Up ➜ Processing ➜ Invoice Sent ➜ Ready ➜ Delivered).
-- **Dynamic Pricing Explorer:** Loaded directly from Supabase, featuring interactive price cards and an automated, database-backed Minimum Order Surcharge warning (e.g., automatically adjusting when the admin changes it).
-- **AI Chat Assistant:** A smart conversational assistant powered by OpenAI GPT-4o-mini and integrated directly with Supabase to answer customer inquiries and track orders in real time.
-
-### 2. 🛡️ Admin & Staff Dashboard
-- **Overview Analytics:** Live indicators for active orders, revenue tracking, pending invoices, and staff workloads.
-- **Order Management:** Assign, reassign, update delivery status, invoice generation, and delay notifications.
-- **Staff Management:** Create, update, or suspend driver/accountant/operations staff accounts securely.
-- **Company Settings Panel:** Live administration of payment/bank details, VAT tax rates, geographic coordinate markers (Latitude/Longitude), service areas, and the **Minimum Order Value**.
-
-### 3. ⚡ Supabase Edge Functions (Deno backend)
-- **`save-company-settings`**: Sanitizes and saves administrative business profiles, coordinates, and service areas to the database.
-- **`chat-assistant`**: Powers the conversational interface, dynamically fetching database settings and tracking orders.
-- **`generate-invoice`**: Automatically computes invoice PDFs with accurate VAT tax rates and payment instructions.
-- ...and standalone helper functions (`create-order`, `confirm-payment`, `mark-delivered`, etc.) for transactional operations.
+- [What It Does](#what-it-does)
+- [Key Features](#key-features)
+- [Tech Stack](#tech-stack)
+- [Repository Structure](#repository-structure)
+- [Prerequisites](#prerequisites)
+- [Setup & Local Development](#setup--local-development)
+- [Environment Variables](#environment-variables)
+- [Edge Functions (Supabase)](#edge-functions-supabase)
+- [Voice AI Integration (Vapi)](#voice-ai-integration-vapi)
+- [License](#license)
 
 ---
 
-## 🛠️ Getting Started (Local Development)
+## What It Does
 
-### Prerequisites
-- **Node.js** (v18 or higher recommended)
-- **Git** (v2.54+ installed)
-- **Supabase CLI** (for Edge Functions development)
+FreshPress provides an end-to-end operational platform for laundry businesses:
+1. **Customer Portal:** Allows users to view pricing, book laundry pickups, and track their order status in real time.
+2. **Staff/Admin Dashboard:** A secured area (`/staff`) for employees to view incoming orders, update statuses (Pending, Picked Up, Processing, Ready, Delivered), and generate invoices.
+3. **Voice AI Assistant:** A floating widget that allows customers to have natural, real-time phone conversations with "Pressy", an AI agent capable of reading prices, checking order statuses, and scheduling pickups directly into the database.
 
-### Setup & Run
-1. **Clone & Navigate**
-   ```sh
+## Key Features
+
+- **Real-time Order Tracking:** Customers can track their laundry using their `LAU-XXXXXX` order ID.
+- **Automated Invoicing:** Admins can generate and send PDF invoices to customers.
+- **AI Voice Agent:** Fully integrated Voice AI (via Vapi.ai) that natively queries the Supabase database.
+- **Role-Based Access Control:** Supabase Row Level Security (RLS) ensures only authorized staff can manage orders.
+- **Responsive Design:** Mobile-first architecture built with Tailwind CSS.
+
+## Tech Stack
+
+- **Frontend:** React 18, Vite, TypeScript
+- **Styling:** Tailwind CSS, shadcn/ui components, Lucide Icons
+- **Backend & Database:** Supabase (PostgreSQL, Auth, Edge Functions)
+- **AI Voice Agent:** Vapi.ai (Powered by LiveKit, Deepgram, and OpenAI)
+- **Deployment:** Vercel (Frontend), Supabase (Backend/Functions)
+
+## Repository Structure
+
+```text
+.
+├── src/
+│   ├── components/       # Reusable UI components (shadcn/ui)
+│   ├── lib/              # Utility functions and Supabase client
+│   ├── routes/
+│   │   ├── customer/     # Customer-facing pages (Home, Pricing, Tracking)
+│   │   └── staff/        # Admin and staff dashboard pages
+│   ├── App.tsx           # Main application router
+│   └── main.tsx          # React entry point
+├── supabase/
+│   └── functions/        # Deno Edge Functions (vapi-webhook, create-order, etc.)
+├── index.html            # HTML entry point (includes Open Graph meta tags)
+├── package.json          # npm dependencies
+└── README.md
+```
+
+## Prerequisites
+
+- [Node.js](https://nodejs.org/) (v18 or higher)
+- [Supabase CLI](https://supabase.com/docs/guides/cli) (for deploying Edge Functions)
+- A [Vapi.ai](https://vapi.ai/) account (for Voice AI features)
+
+## Setup & Local Development
+
+1. **Clone the repository:**
+   ```bash
    git clone https://github.com/pharlow226/FreshPress.git
    cd FreshPress
    ```
 
-2. **Install Dependencies**
-   ```sh
+2. **Install dependencies:**
+   ```bash
    npm install
    ```
 
-3. **Configure Environment**
-   Duplicate `.env.example` as `.env` and fill in your Supabase project keys, OpenAI keys, and other required variables:
-   ```sh
-   cp .env.example .env
-   ```
+3. **Configure environment variables:**
+   Create a `.env` file in the root directory (see [Environment Variables](#environment-variables) below).
 
-4. **Launch Dev Server**
-   ```sh
+4. **Start the development server:**
+   ```bash
    npm run dev
    ```
-   The application will be accessible at: `http://localhost:5173/`
+   The app will be available at `http://localhost:5173`.
 
----
+## Environment Variables
 
-## ☁️ Deploying to Vercel (Frontend & UI)
+Create a `.env` file in the root directory and configure the following required variables. **Never commit this file to version control.**
 
-Vercel is the recommended hosting provider for the frontend React/Vite application. It provides a free global CDN, instantaneous build previews, and zero-config deployment for Vite projects.
+```env
+# Supabase Configuration
+VITE_SUPABASE_URL=https://your-project-id.supabase.co
+VITE_SUPABASE_ANON_KEY=your_anon_key
 
-### Step-by-Step Deployment:
+# Vapi Voice Assistant Configuration
+VITE_VAPI_PUBLIC_KEY=your_vapi_public_key
+VITE_VAPI_ASSISTANT_ID=your_vapi_assistant_id
+```
 
-1. **Push your code to GitHub** (Completed! Your code is hosted at `https://github.com/pharlow226/FreshPress.git`).
-2. **Log into Vercel**
-   - Go to [vercel.com](https://vercel.com/) and log in using your **GitHub account**.
-3. **Import the Project**
-   - Click the **"New Project"** button in your Vercel dashboard.
-   - Under "Import Git Repository", find and select your **`FreshPress`** repository.
-4. **Configure Project Settings**
-   - **Framework Preset**: Vercel will automatically detect **Vite** as the framework. Keep it as default.
-   - **Root Directory**: `./` (Keep as default).
-   - **Build Command**: `npm run build`
-   - **Output Directory**: `dist`
-5. **Add Environment Variables**
-   - Expand the **"Environment Variables"** dropdown.
-   - Add all the variables from your local `.env` file that begin with `VITE_` (Vercel requires these to inject them into the production build bundle). Key variables include:
-     - `VITE_SUPABASE_URL`
-     - `VITE_SUPABASE_ANON_KEY`
-     - `VITE_SAVE_COMPANY_SETTINGS_URL`
-     - `VITE_CHAT_ASSISTANT_URL`
-     - ...and any other custom endpoint URLs.
-6. **Deploy!**
-   - Click **"Deploy"**. Vercel will build and launch your application in under 60 seconds and provide a production URL (e.g., `https://freshpress-yourusername.vercel.app`).
-   - **Continuous Deployment:** Any time you push new commits to your GitHub `main` branch, Vercel will automatically trigger a new build and deploy the changes silently in the background!
+## Edge Functions (Supabase)
 
----
+This project relies on several Supabase Edge Functions (e.g., `vapi-webhook`, `create-order`, `generate-invoice`). 
 
-## ⚡ Deploying Supabase Edge Functions
-
-You can deploy the backend Edge Functions directly to your live Supabase project.
-
-### 1. Login to Supabase CLI
-```powershell
+To deploy an Edge Function using the Supabase CLI:
+```bash
+# Login to Supabase CLI
 supabase login
+
+# Link your local project
+supabase link --project-ref your_project_id
+
+# Deploy a specific function (e.g., vapi-webhook)
+supabase functions deploy vapi-webhook --no-verify-jwt
 ```
 
-### 2. Deploy All Functions at Once
-Use the pre-configured PowerShell script in the root directory to deploy all Edge Functions automatically:
-```powershell
-powershell -ExecutionPolicy Bypass -File .\deploy-all-functions.ps1
-```
+*Note: Functions triggered by external services like Vapi.ai must be deployed with the `--no-verify-jwt` flag so they are accessible to the webhook.*
 
-### 3. Deploy a Single Function manually
-```powershell
-& "$env:USERPROFILE\supabase-bin\supabase.exe" functions deploy chat-assistant --project-ref pofiytkpduprbkmgunbg --use-docker=false
-```
+## Voice AI Integration (Vapi)
 
----
+The AI Voice Assistant ("Pressy") is configured via the Vapi dashboard. 
+The configuration schema (System Prompt and Database Tool definitions) can be found in `vapi_configuration.json`. 
 
-## 📁 Repository Structure
-```
-FreshPress/
-├── src/
-│   ├── components/       # Shared UI and layout elements
-│   ├── hooks/            # Reusable React hooks
-│   ├── lib/              # Database, operational, and Status helpers
-│   ├── routes/
-│   │   ├── admin/        # Admin Dashboard pages and settings
-│   │   ├── customer/     # Customer portal, price cards, order forms
-│   │   └── staff/        # Operating crew portal and login pages
-│   └── main.tsx          # App bootstrapper
-├── supabase/
-│   └── functions/        # Deno Edge Functions (Chat, Save, Invoices)
-├── .env.example          # Environment boilerplate
-├── .gitignore            # File exclusions
-├── tailwind.config.ts    # Styling theme
-└── vite.config.ts        # Bundler configuration
-```
+The Voice AI communicates with the database through the `vapi-webhook` Edge Function, which exposes the following tools:
+- `get_pricing`
+- `check_order_status`
+- `create_pickup_order`
 
----
+## License
 
-## 🛡️ License
-Private and confidential. Built for **FreshPress Laundry Services**.
+This project is proprietary and confidential. All rights reserved.
