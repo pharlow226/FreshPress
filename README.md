@@ -1,18 +1,19 @@
 # FreshPress Laundry Service
 
-A modern, full-stack web application built for FreshPress, a premium laundry and dry-cleaning service based in Lagos, Nigeria. The platform features a customer-facing portal for booking pickups, a secure staff dashboard for managing orders, and an AI-powered voice assistant ("Pressy") that handles customer inquiries and order creation over real-time audio.
+A modern, full-stack web application built for FreshPress, a premium laundry and dry-cleaning service based in Lagos, Nigeria. The platform features a customer-facing portal for booking pickups, a secure staff dashboard for managing orders, and dual AI-powered assistants (Text and Voice) that handle customer inquiries and order creation in real-time.
 
 ## 📋 Table of Contents
 
 - [What It Does](#what-it-does)
 - [Key Features](#key-features)
+- [Staff Roles & Permissions](#staff-roles--permissions)
 - [Tech Stack](#tech-stack)
 - [Repository Structure](#repository-structure)
 - [Prerequisites](#prerequisites)
 - [Setup & Local Development](#setup--local-development)
 - [Environment Variables](#environment-variables)
 - [Edge Functions (Supabase)](#edge-functions-supabase)
-- [Voice AI Integration (Vapi)](#voice-ai-integration-vapi)
+- [AI Integrations](#ai-integrations)
 - [License](#license)
 
 ---
@@ -21,16 +22,35 @@ A modern, full-stack web application built for FreshPress, a premium laundry and
 
 FreshPress provides an end-to-end operational platform for laundry businesses:
 1. **Customer Portal:** Allows users to view pricing, book laundry pickups, and track their order status in real time.
-2. **Staff/Admin Dashboard:** A secured area (`/staff`) for employees to view incoming orders, update statuses (Pending, Picked Up, Processing, Ready, Delivered), and generate invoices.
-3. **Voice AI Assistant:** A floating widget that allows customers to have natural, real-time phone conversations with "Pressy", an AI agent capable of reading prices, checking order statuses, and scheduling pickups directly into the database.
+2. **Staff/Admin Dashboard:** A secured area (`/staff`) for employees to view incoming orders, update statuses, and generate invoices.
+3. **AI Chat & Voice Assistants:** Dual AI widgets (Text chat and Voice call) that allow customers to have natural conversations with "Pressy". The AI can instantly read live prices, check order statuses, and automatically schedule pickups into the database.
 
 ## Key Features
 
+- **Automated Order Assignment:** When a customer creates a new order (via the website or AI Assistant), the system uses a **Round-Robin algorithm** to automatically assign the order to an available Pickup Staff member.
 - **Real-time Order Tracking:** Customers can track their laundry using their `LAU-XXXXXX` order ID.
-- **Automated Invoicing:** Admins can generate and send PDF invoices to customers.
-- **AI Voice Agent:** Fully integrated Voice AI (via Vapi.ai) that natively queries the Supabase database.
-- **Role-Based Access Control:** Supabase Row Level Security (RLS) ensures only authorized staff can manage orders.
-- **Responsive Design:** Mobile-first architecture built with Tailwind CSS.
+- **Automated Invoicing:** Admins and Accountants can generate and send PDF invoices directly to customers' emails.
+- **AI Assistants (Voice & Chat):** Fully integrated AI agents that natively query the Supabase database to provide 24/7 customer service.
+- **Role-Based Access Control:** Supabase Row Level Security (RLS) ensures distinct permissions for Admins, Accountants, and Pickup Staff.
+
+## Staff Roles & Permissions
+
+The system uses a strict role-based access control architecture. Each staff member can only see and interact with data relevant to their role:
+
+### 1. Admin
+- **Full System Access:** Can view, edit, and delete all orders, customers, and pricing data.
+- **Staff Management:** Can create, delete, and manage other staff accounts.
+- **Order Overrides:** Can manually re-assign orders to different pickup staff or mark orders as delayed.
+
+### 2. Accountant
+- **Financial Access:** Can view all orders but is primarily focused on payments.
+- **Invoicing:** Can generate PDF invoices and trigger emails to customers.
+- **Payment Confirmation:** Can update an order's payment status to "Paid" once bank transfers or POS payments are confirmed.
+
+### 3. Pickup Staff
+- **Restricted View:** Can *only* see orders specifically assigned to them by the round-robin system.
+- **Order Status Updates:** Can update the status of their assigned orders (e.g., marking an order as "Picked Up" or "Delivered").
+- **Customer Contact:** Can view the customer's phone number and address for their assigned pickups.
 
 ## Tech Stack
 
@@ -38,6 +58,7 @@ FreshPress provides an end-to-end operational platform for laundry businesses:
 - **Styling:** Tailwind CSS, shadcn/ui components, Lucide Icons
 - **Backend & Database:** Supabase (PostgreSQL, Auth, Edge Functions)
 - **AI Voice Agent:** Vapi.ai (Powered by LiveKit, Deepgram, and OpenAI)
+- **AI Chat Agent:** Supabase Edge Functions with OpenAI API
 - **Deployment:** Vercel (Frontend), Supabase (Backend/Functions)
 
 ## Repository Structure
@@ -49,11 +70,11 @@ FreshPress provides an end-to-end operational platform for laundry businesses:
 │   ├── lib/              # Utility functions and Supabase client
 │   ├── routes/
 │   │   ├── customer/     # Customer-facing pages (Home, Pricing, Tracking)
-│   │   └── staff/        # Admin and staff dashboard pages
+│   │   └── staff/        # Admin, Accountant, and Pickup Staff dashboards
 │   ├── App.tsx           # Main application router
 │   └── main.tsx          # React entry point
 ├── supabase/
-│   └── functions/        # Deno Edge Functions (vapi-webhook, create-order, etc.)
+│   └── functions/        # Deno Edge Functions (create-order, vapi-webhook, chat-assistant, etc.)
 ├── index.html            # HTML entry point (includes Open Graph meta tags)
 ├── package.json          # npm dependencies
 └── README.md
@@ -64,6 +85,7 @@ FreshPress provides an end-to-end operational platform for laundry businesses:
 - [Node.js](https://nodejs.org/) (v18 or higher)
 - [Supabase CLI](https://supabase.com/docs/guides/cli) (for deploying Edge Functions)
 - A [Vapi.ai](https://vapi.ai/) account (for Voice AI features)
+- An [OpenAI](https://platform.openai.com/) API Key (for Text Chat AI)
 
 ## Setup & Local Development
 
@@ -103,7 +125,7 @@ VITE_VAPI_ASSISTANT_ID=your_vapi_assistant_id
 
 ## Edge Functions (Supabase)
 
-This project relies on several Supabase Edge Functions (e.g., `vapi-webhook`, `create-order`, `generate-invoice`). 
+This project relies on several Supabase Edge Functions to handle backend logic securely. For example, `create-order` handles the round-robin assignment and email notifications, while `vapi-webhook` and `chat-assistant` handle AI communications.
 
 To deploy an Edge Function using the Supabase CLI:
 ```bash
@@ -113,21 +135,17 @@ supabase login
 # Link your local project
 supabase link --project-ref your_project_id
 
-# Deploy a specific function (e.g., vapi-webhook)
-supabase functions deploy vapi-webhook --no-verify-jwt
+# Deploy a specific function
+supabase functions deploy create-order --no-verify-jwt
 ```
 
-*Note: Functions triggered by external services like Vapi.ai must be deployed with the `--no-verify-jwt` flag so they are accessible to the webhook.*
+## AI Integrations
 
-## Voice AI Integration (Vapi)
+### Voice AI (Vapi.ai)
+The Voice Assistant is configured via the Vapi dashboard. The AI communicates with the database through the `vapi-webhook` Edge Function. The configuration schema (System Prompt and Tool definitions) can be found in `vapi_configuration.json`.
 
-The AI Voice Assistant ("Pressy") is configured via the Vapi dashboard. 
-The configuration schema (System Prompt and Database Tool definitions) can be found in `vapi_configuration.json`. 
-
-The Voice AI communicates with the database through the `vapi-webhook` Edge Function, which exposes the following tools:
-- `get_pricing`
-- `check_order_status`
-- `create_pickup_order`
+### Text Chat AI
+The text-based chat widget communicates directly with the `chat-assistant` Supabase Edge Function, which securely queries the OpenAI API to provide dynamic responses based on live database data.
 
 ## License
 
