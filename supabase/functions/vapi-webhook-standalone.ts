@@ -74,28 +74,22 @@ async function createPickupOrder(args: any) {
     return "Missing required fields. Need name, phone, email, address, date, and time slot.";
   }
 
-  // Generate LAU-XXXXXX
-  const randomNum = Math.floor(100000 + Math.random() * 900000);
-  const orderId = `LAU-${randomNum}`;
-
   let validTimeSlot = 'morning';
   const slotLower = (pickup_time_slot || '').toLowerCase();
   if (slotLower.includes('afternoon') || slotLower.includes('12pm')) validTimeSlot = 'afternoon';
   else if (slotLower.includes('evening') || slotLower.includes('3pm')) validTimeSlot = 'evening';
 
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/orders`, {
+  const res = await fetch(`${SUPABASE_URL}/functions/v1/create-order`, {
     method: 'POST',
-    headers: dbH(),
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      order_id: orderId,
       customer_name,
       email: email.toLowerCase().replace(/\s/g, ''),
       phone,
       address,
       pickup_date,
       pickup_time_slot: validTimeSlot,
-      status: 'pending',
-      payment_status: 'unpaid'
+      special_instructions: "Created via Voice AI"
     })
   });
 
@@ -104,7 +98,10 @@ async function createPickupOrder(args: any) {
     return "Failed to create order due to a system error. Please instruct the customer to use the website.";
   }
   
-  return `Order successfully created! The Order ID is ${orderId}. Inform the customer that our team will arrive on ${pickup_date} during the ${pickup_time_slot} slot.`;
+  const data = await res.json();
+  const orderId = data.orderId || `an order`;
+  
+  return `Order successfully created! The Order ID is ${orderId}. Inform the customer that our team will arrive on ${pickup_date} during the ${validTimeSlot} slot.`;
 }
 
 // ── Main Webhook Handler ──────────────────────────────────────────────────────
