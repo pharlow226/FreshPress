@@ -48,6 +48,22 @@ async function getPricing(args: any) {
   return resultStr;
 }
 
+async function getCompanyInfo(args: any) {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/company_info?select=*&limit=1`, { headers: dbH() });
+  if (!res.ok) return "Company information is temporarily unavailable.";
+  const rows = await res.json();
+  if (rows.length === 0) return "Company information not configured.";
+  
+  const c = rows[0];
+  let info = `FreshPress Laundry Information:\n`;
+  if (c.minimum_order) info += `- Minimum Order: ${c.minimum_order} Naira\n`;
+  if (c.company_address) info += `- Address: ${c.company_address}\n`;
+  if (c.company_phone) info += `- Phone/WhatsApp: ${c.company_phone}\n`;
+  if (c.company_email) info += `- Email: ${c.company_email}\n`;
+  info += `- Working Hours: Monday-Saturday 7AM-8PM, closed Sundays.\n`;
+  return info;
+}
+
 async function checkOrderStatus(args: any) {
   const orderId = args.order_id?.toUpperCase();
   if (!orderId) return "Please provide a valid order ID (e.g. LAU-123456).";
@@ -129,6 +145,8 @@ Deno.serve(async (req: Request) => {
         
         if (functionName === 'get_pricing') {
           resultData = await getPricing(args);
+        } else if (functionName === 'get_company_info') {
+          resultData = await getCompanyInfo(args);
         } else if (functionName === 'check_order_status') {
           resultData = await checkOrderStatus(args);
         } else if (functionName === 'create_pickup_order') {
