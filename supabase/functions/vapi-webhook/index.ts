@@ -60,6 +60,17 @@ async function getCompanyInfo(args: any) {
   if (c.company_address) info += `- Address: ${c.company_address}\n`;
   if (c.company_phone) info += `- Phone/WhatsApp: ${c.company_phone}\n`;
   if (c.company_email) info += `- Email: ${c.company_email}\n`;
+  // Fix TTS pronunciation for common Nigerian banks
+  let bankName = c.bank_name || 'Bank';
+  if (bankName.toLowerCase().includes('opay')) {
+    bankName = 'Oh-Pay';
+  } else if (bankName.toLowerCase().includes('gtb') || bankName.toLowerCase().includes('guaranty')) {
+    bankName = 'G T B';
+  } else if (bankName.toLowerCase().includes('fcmb')) {
+    bankName = 'F C M B';
+  }
+  
+  if (c.account_number) info += `- Bank Account: ${c.account_number} (${bankName})\n`;
   info += `- Working Hours: Monday-Saturday 7AM-8PM, closed Sundays.\n`;
   return info;
 }
@@ -120,11 +131,88 @@ async function createPickupOrder(args: any) {
   return `Order successfully created! The Order ID is ${orderId}. Inform the customer that our team will arrive on ${pickup_date} during the ${validTimeSlot} slot.`;
 }
 
+async function logEndOfCallReport(message: any) {
+  const callId = message.call?.id;
+  if (!callId) return;
+
+  const phone = message.call?.customer?.number || message.call?.phoneCallProviderDetails?.from || null;
+  const transcript = message.transcript || '';
+  const summary = message.summary || '';
+  const recordingUrl = message.recordingUrl || '';
+  const endedReason = message.endedReason || '';
+  const durationSeconds = message.durationSeconds || message.call?.duration || 0;
+  const cost = message.cost || 0;
+
+  // Extract metadata (useful for Web SDK calls where phone is null)
+  const metadata = message.call?.metadata || {};
+  const orderId = metadata.order_id || null;
+  let customerId = metadata.customer_id || null;
+
+  // If it's a real phone call (we have a phone number but no customerId), look up the customer!
+  if (phone && !customerId) {
+    try {
+      // Normalize Vapi's +234 format to match the local 080 format stored in the customers table
+      let localPhone = phone.replace(/\D/g, ''); // strip non-digits
+      if (localPhone.startsWith('234')) {
+        localPhone = '0' + localPhone.slice(3);
+      }
+
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/customers?phone=eq.${localPhone}&select=id&limit=1`, {
+        headers: dbH()
+      });
+      if (res.ok) {
+        const rows = await res.json();
+        if (rows.length > 0) {
+          customerId = rows[0].id;
+        }
+      }
+    } catch (e) {
+      console.warn("Failed to lookup customer by phone", e);
+    }
+  }
+
+  try {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/vapi_call_logs?on_conflict=call_id`, {
+      method: 'POST',
+      headers: {
+        ...dbH(),
+        'Prefer': 'resolution=merge-duplicates'
+      },
+      body: JSON.stringify({
+        call_id: callId,
+        phone_number: phone,
+        order_id: orderId,
+        customer_id: customerId,
+        transcript,
+        summary,
+        recording_url: recordingUrl,
+        ended_reason: endedReason,
+        duration_seconds: durationSeconds,
+        cost,
+        created_at: new Date().toISOString()
+      })
+    });
+    
+    if (!res.ok) {
+      const errText = await res.text();
+      console.error(`[vapi-webhook] DB upsert failed: ${res.status} ${errText}`);
+    }
+  } catch (err) {
+    console.error('[vapi-webhook] Failed to log end-of-call report:', err);
+  }
+}
+
 // ── Main Webhook Handler ──────────────────────────────────────────────────────
 
 Deno.serve(async (req: Request) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS });
   if (req.method !== 'POST') return Response.json({ error: 'Method not allowed' }, { status: 405, headers: CORS });
+
+  const secret = req.headers.get("x-vapi-secret");
+  if (secret !== "freshpress-secure-2026") {
+    console.error("Unauthorized request blocked!");
+    return Response.json({ error: 'Unauthorized' }, { status: 401, headers: CORS });
+  }
 
   try {
     const body = await req.json();
@@ -162,6 +250,9 @@ Deno.serve(async (req: Request) => {
       }
 
       return Response.json({ results }, { status: 200, headers: CORS });
+    } else if (type === 'end-of-call-report') {
+      await logEndOfCallReport(body.message);
+      return Response.json({ success: true }, { status: 200, headers: CORS });
     }
 
     // Default return for other events (like 'status-update')
