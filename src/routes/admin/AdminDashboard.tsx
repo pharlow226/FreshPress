@@ -18,6 +18,7 @@ import { PricingManagementPage } from '@/routes/admin/components/PricingManageme
 import { CustomersPage }         from '@/routes/admin/components/CustomersPage';
 import { ActivityLogPage }       from '@/routes/admin/components/ActivityLogPage';
 import { CompanySettingsPage }   from '@/routes/admin/components/CompanySettingsPage';
+import { VoiceLogsPage }         from '@/routes/admin/components/VoiceLogsPage';
 import { getStaffUser, clearStaffUser } from '@/lib/supabase';
 import { staffSignOut } from '@/lib/operations';
 
@@ -43,6 +44,7 @@ export default function AdminDashboard() {
   const renderPage = () => {
     switch (activePage) {
       case 'overview':  return <OverviewPage />;
+      case 'voice':     return <VoiceLogsPage />;
       case 'orders':    return <AllOrdersPage />;
       case 'staff':     return <StaffManagementPage />;
       case 'pricing':   return <PricingManagementPage />;
