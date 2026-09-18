@@ -185,7 +185,16 @@ export function VoiceLogsPage() {
                       <h4 className="text-sm font-bold flex items-center gap-2 text-gray-900">
                         <FileAudio className="w-4 h-4 text-indigo-500" /> Audio Recording
                       </h4>
-                      <audio controls src={selectedLog.recording_url} className="w-full h-10 rounded-lg" />
+                      <audio 
+                        key={selectedLog.id} 
+                        controls 
+                        preload="metadata"
+                        src={selectedLog.recording_url} 
+                        className="w-full h-10 rounded-lg" 
+                      >
+                        Your browser does not support the audio element.
+                      </audio>
+                      <p className="text-xs text-gray-500">If the audio does not play, <a href={selectedLog.recording_url} target="_blank" rel="noreferrer" className="text-indigo-600 underline">click here to open it directly</a>.</p>
                     </div>
                   )}
 
