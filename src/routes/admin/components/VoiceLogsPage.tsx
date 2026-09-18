@@ -22,16 +22,39 @@ export function VoiceLogsPage() {
   const [logs, setLogs] = useState<VapiLog[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedLog, setSelectedLog] = useState<VapiLog | null>(null);
+  
+  // Filtering states
+  const [filterType, setFilterType] = useState<string>('all');
+  const [startDate, setStartDate] = useState<string>('');
+  const [endDate, setEndDate] = useState<string>('');
 
   const fetchLogs = async () => {
     setLoading(true);
     try {
-      const { data, error } = await supabase
+      let query = supabase
         .from('vapi_call_logs')
         .select('*')
-        .order('created_at', { ascending: false })
-        .limit(50);
+        .order('created_at', { ascending: false });
+
+      // Apply date filters
+      const now = new Date();
+      if (filterType === 'today') {
+        const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
+        query = query.gte('created_at', startOfToday);
+      } else if (filterType === 'this_month') {
+        const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+        query = query.gte('created_at', startOfMonth);
+      } else if (filterType === 'custom' && startDate && endDate) {
+        // Add one day to end date to include the entire end day
+        const endDay = new Date(endDate);
+        endDay.setDate(endDay.getDate() + 1);
+        query = query.gte('created_at', new Date(startDate).toISOString())
+                     .lt('created_at', endDay.toISOString());
+      } else {
+        query = query.limit(100); // Default limit for 'all'
+      }
         
+      const { data, error } = await query;
       if (error) throw error;
       setLogs(data || []);
     } catch (err) {
@@ -43,26 +66,58 @@ export function VoiceLogsPage() {
 
   useEffect(() => {
     fetchLogs();
-  }, []);
+  }, [filterType, startDate, endDate]);
 
   const totalMinutes = logs.reduce((acc, log) => acc + (log.duration_seconds / 60), 0);
   const totalCost = logs.reduce((acc, log) => acc + Number(log.cost), 0);
 
   return (
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
         <div>
           <h2 className="text-2xl font-bold tracking-tight">AI Voice Telemetry</h2>
           <p className="text-muted-foreground">Monitor voicebot interactions, call transcripts, and usage metrics.</p>
         </div>
-        <button 
-          onClick={fetchLogs}
-          disabled={loading}
-          className="flex items-center gap-2 bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 transition shadow-sm"
-        >
-          <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-          Refresh Logs
-        </button>
+        
+        <div className="flex flex-wrap items-center gap-3">
+          <select 
+            value={filterType} 
+            onChange={(e) => setFilterType(e.target.value)}
+            className="border-gray-300 rounded-lg text-sm focus:ring-indigo-500 focus:border-indigo-500"
+          >
+            <option value="all">All Time (Recent 100)</option>
+            <option value="today">Today</option>
+            <option value="this_month">This Month</option>
+            <option value="custom">Custom Range</option>
+          </select>
+
+          {filterType === 'custom' && (
+            <div className="flex items-center gap-2">
+              <input 
+                type="date" 
+                value={startDate} 
+                onChange={(e) => setStartDate(e.target.value)}
+                className="border-gray-300 rounded-lg text-sm"
+              />
+              <span className="text-gray-500">to</span>
+              <input 
+                type="date" 
+                value={endDate} 
+                onChange={(e) => setEndDate(e.target.value)}
+                className="border-gray-300 rounded-lg text-sm"
+              />
+            </div>
+          )}
+
+          <button 
+            onClick={fetchLogs}
+            disabled={loading}
+            className="flex items-center gap-2 bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 transition shadow-sm"
+          >
+            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+            <span className="hidden sm:inline">Refresh Logs</span>
+          </button>
+        </div>
       </div>
 
       {/* Telemetry Overview Cards */}
