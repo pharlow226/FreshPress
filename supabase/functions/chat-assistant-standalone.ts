@@ -506,6 +506,7 @@ Now respond.`;
 
         if (createRes.ok) {
           const orderData = await createRes.json();
+          parsed.created_order_id = orderData.orderId; // Save for telemetry
           reply += `\n\n🎉 Perfect! Your order has been created successfully. Your Order ID is **${orderData.orderId}**. Our team will arrive on ${orderData.pickupDate}.`;
         } else {
           reply += `\n\nI apologize, but I encountered an error saving your order. Please reach out on WhatsApp.`;
@@ -530,7 +531,7 @@ Now respond.`;
     }
 
     // ── Step 9 — Save session, messages, and escalate (blocking to ensure save) ────────
-    // Upsert session
+    // Upsert session (TELEMETRY ADDED)
     await fetch(`${SUPABASE_URL}/rest/v1/chat_sessions?on_conflict=session_id`, {
       method:  'POST',
       headers: dbH({ 'Prefer': 'resolution=merge-duplicates,return=minimal' }),
@@ -538,6 +539,9 @@ Now respond.`;
         session_id:       sessionId,
         last_activity_at: now,
         messages_count:   messageCount + 2,
+        last_intent:      topic,
+        requires_human:   requiresHuman,
+        order_id:         parsed.created_order_id || mentionedOrderId || null
       }),
     }).catch(e => console.warn('[chat-assistant] session upsert failed:', e));
 
