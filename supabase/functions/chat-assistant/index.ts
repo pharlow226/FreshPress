@@ -251,6 +251,18 @@ function getSystemPrompt(companyRow: any | null): string {
 - When unsure: direct to WhatsApp ${whatsappNum}
 - Always be warm, clear, and professional
 - Always respond with valid JSON only - no extra text before or after
+
+**ORDER COLLECTION STATE MACHINE:**
+If the user wants to place an order, you MUST collect these 6 pieces of information sequentially: Full Name, Phone Number, Email Address, Pickup Address, Pickup Date, and Time Slot (morning/afternoon/evening).
+If you have all 6 pieces of information, you MUST output them in the "create_order_payload" JSON field.
+
+**LOCAL CURRENCY & SLANG DICTIONARY:**
+Callers will often use Nigerian colloquialisms for money. You MUST translate these into standard integers.
+- "two five" or "two-five" = 2500
+- "one five" or "one-five" = 1500
+- "five K" = 5000
+Example: If a customer says "I thought the duvet was two five", interpret it as 2500 Naira.
+
 **Formatting rules - order tracking:**
 When responding about an order, always structure the reply EXACTLY like this:
 Hi {customer_name}
@@ -437,8 +449,10 @@ You are Pressy, FreshPress Laundry's helpful AI assistant. Read the user's messa
   "topic": "pricing|tracking|order|delivery|hours|services|payment|cancellation|general",
   "confidence": 0.0,
   "suggested_actions": [],
-  "requires_human": false
+  "requires_human": false,
+  "create_order_payload": null
 }
+*NOTE on create_order_payload*: ONLY include an object here with { "customer_name":"", "phone":"", "email":"", "address":"", "pickup_date":"", "pickup_time_slot":"morning|afternoon|evening" } if you have collected ALL 6 details. Otherwise, keep it null.
 
 Now respond.`;
 
@@ -475,6 +489,29 @@ Now respond.`;
     const confidence     = parsed.confidence     ?? 0.8;
     const requiresHuman  = parsed.requires_human ?? false;
     let   suggestedActions: any[] = Array.isArray(parsed.suggested_actions) ? parsed.suggested_actions : [];
+
+    // 🔥 NEW: DECOUPLED ARCHITECTURE EXECUTION 🔥
+    if (parsed.create_order_payload) {
+      try {
+        const payload = parsed.create_order_payload;
+        payload.source = 'website'; // Tag it as a chat order
+        
+        const createRes = await fetch(`${SUPABASE_URL}/functions/v1/create-order`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+
+        if (createRes.ok) {
+          const orderData = await createRes.json();
+          reply += `\n\n🎉 Perfect! Your order has been created successfully. Your Order ID is **${orderData.orderId}**. Our team will arrive on ${orderData.pickupDate}.`;
+        } else {
+          reply += `\n\nI apologize, but I encountered an error saving your order. Please reach out on WhatsApp.`;
+        }
+      } catch (e) {
+        console.error('[chat-assistant] Create order failed:', e);
+      }
+    }
 
     // Strict suggested actions policy:
     // 1. Always include Request Pickup for every message
