@@ -1,455 +1,359 @@
-/**
- * FreshPress — create-order Edge Function (standalone, dashboard-ready)
- *
- * HOW TO DEPLOY:
- *  1. Go to: https://supabase.com/dashboard/project/pofiytkpduprbkmgunbg/functions
- *  2. Open the create-order function -> Edit -> paste entire file -> Deploy
- *
- * Secrets required (Dashboard -> Edge Functions -> Secrets):
- *  SERVICE_ROLE_KEY      Supabase service role key (NOT prefixed with SUPABASE_)
- *  BREVO_API_KEY         Brevo API key
- *  BREVO_SENDER_EMAIL    Verified sender email in Brevo
- *  BREVO_LIST_ID         Brevo contacts list ID (optional, for CRM)
- *  RESEND_API_KEY        Resend key (fallback only)
- *
- * Flow:
- *  1. Validate payload
- *  2. Generate LAU-XXXXXX order ID
- *  3. Insert order into Supabase (admin alert on failure)
- *  4. Round-robin staff assignment
- *  5. Customer confirmation email (Brevo primary, Resend fallback)
- *  6. Staff notification email
- *  7. Brevo CRM upsert
- *  8. WhatsApp placeholder (Evolution API — uncomment when ready)
- */
-
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.7';
-
-// ── CORS ──────────────────────────────────────────────────────────────────────
-const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
-  'Access-Control-Allow-Methods': 'POST, OPTIONS',
-};
-
-const ADMIN_EMAIL = 'faloyesamuel400@gmail.com';
-
-// ── Types ─────────────────────────────────────────────────────────────────────
-interface OrderPayload {
-  customer_name: string;
-  phone: string;
-  email: string;
-  address: string;
-  pickup_date: string;
-  pickup_time_slot: 'morning' | 'afternoon' | 'evening';
-  special_instructions?: string;
-}
-
-interface StaffMember {
-  id: string;
-  full_name: string;
-  email: string;
-  last_assigned_at: string | null;
-}
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-/** LAU-XXXXXX format — 6 random digits */
-function generateOrderId(): string {
-  const digits = Math.floor(100000 + Math.random() * 900000);
-  return `LAU-${digits}`;
-}
-
-const SLOTS: Record<string, string> = {
-  morning:   'Morning (9AM - 12PM)',
-  afternoon: 'Afternoon (1PM - 4PM)',
-  evening:   'Evening (4PM - 7PM)',
-};
-
-function fmtDate(d: string): string {
-  return new Date(d).toLocaleDateString('en-NG', {
-    weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
-  });
-}
-
-// ── Brevo email sender ────────────────────────────────────────────────────────
-async function sendBrevoEmail(params: {
-  apiKey: string;
-  senderEmail: string;
-  to: { email: string; name?: string }[];
-  subject: string;
-  html: string;
-}): Promise<boolean> {
-  const res = await fetch('https://api.brevo.com/v3/smtp/email', {
-    method: 'POST',
-    headers: { 'api-key': params.apiKey, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      sender:      { name: 'FreshPress Laundry', email: params.senderEmail },
-      to:          params.to,
-      subject:     params.subject,
-      htmlContent: params.html,
-    }),
-  });
-
-  if (!res.ok) {
-    const err = await res.text().catch(() => 'unknown');
-    console.error('[create-order] Brevo send error:', err);
-    return false;
-  }
-  return true;
-}
-
-// ── Email templates ───────────────────────────────────────────────────────────
-
-function customerConfirmationEmail(p: {
-  orderId: string; customerName: string; pickupDate: string;
-  timeSlot: string; address: string; phone: string; notes?: string;
-}): string {
-  const rows = [
-    ['Order ID',    p.orderId],
-    ['Pickup Date', fmtDate(p.pickupDate)],
-    ['Time Slot',   SLOTS[p.timeSlot] || p.timeSlot],
-    ['Address',     p.address],
-    ['WhatsApp',    p.phone],
-    ...(p.notes ? [['Notes', p.notes]] : []),
-  ];
-
-  return `<!DOCTYPE html>
-<html lang="en">
-<head><meta charset="UTF-8"/><title>Order Confirmed - FreshPress</title></head>
-<body style="margin:0;padding:0;background:#f0f4ff;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
-<table width="100%" cellpadding="0" cellspacing="0" style="padding:32px 16px;background:#f0f4ff;">
-<tr><td align="center">
-<table style="max-width:580px;width:100%;background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,.08);">
-  <tr><td style="background:linear-gradient(135deg,#3b5bdb,#4c3d9e);padding:32px 40px;text-align:center;">
-    <p style="margin:0 0 4px;color:rgba(255,255,255,.7);font-size:11px;font-weight:700;letter-spacing:2px;text-transform:uppercase;">FreshPress Laundry</p>
-    <h1 style="margin:0;color:#fff;font-size:26px;font-weight:900;">Order Confirmed</h1>
-    <p style="margin:10px 0 0;color:rgba(255,255,255,.8);font-size:14px;">Your laundry is in good hands.</p>
-  </td></tr>
-  <tr><td style="background:#eef2ff;padding:16px 40px;text-align:center;border-bottom:1px solid #e0e7ff;">
-    <p style="margin:0;font-size:11px;color:#6366f1;font-weight:700;letter-spacing:1px;text-transform:uppercase;">Your Order ID</p>
-    <p style="margin:6px 0 0;font-size:28px;font-weight:900;color:#3b5bdb;font-family:monospace;letter-spacing:3px;">${p.orderId}</p>
-    <p style="margin:6px 0 0;font-size:12px;color:#94a3b8;">Track at: fresh-press-chi.vercel.app/track</p>
-  </td></tr>
-  <tr><td style="padding:32px 40px;">
-    <p style="margin:0 0 20px;font-size:15px;color:#1e293b;">Hi <strong>${p.customerName}</strong>,</p>
-    <p style="margin:0 0 24px;font-size:14px;color:#475569;line-height:1.7;">Your pickup has been confirmed. Our courier will arrive at your address during the window below.</p>
-    <table width="100%" cellpadding="0" cellspacing="0" style="background:#f8faff;border-radius:12px;border:1px solid #e0e7ff;margin-bottom:24px;">
-      ${rows.map(([label, value], i) => `
-      <tr><td style="padding:13px 20px;${i < rows.length - 1 ? 'border-bottom:1px solid #e0e7ff;' : ''}">
-        <p style="margin:0;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#6366f1;">${label}</p>
-        <p style="margin:4px 0 0;font-size:14px;font-weight:600;color:#1e293b;">${value}</p>
-      </td></tr>`).join('')}
-    </table>
-    <div style="text-align:center;">
-      <a href="https://fresh-press-chi.vercel.app/track"
-         style="display:inline-block;background:linear-gradient(135deg,#3b5bdb,#4c3d9e);color:#fff;font-size:14px;font-weight:700;padding:13px 28px;border-radius:10px;text-decoration:none;">
-        Track My Order
-      </a>
-    </div>
-  </td></tr>
-  <tr><td style="background:#f8faff;border-top:1px solid #e0e7ff;padding:18px 40px;text-align:center;">
-    <p style="margin:0 0 4px;font-size:12px;color:#94a3b8;">Call or WhatsApp: <strong style="color:#3b5bdb;">+234 811 314 3272</strong></p>
-    <p style="margin:0;font-size:11px;color:#cbd5e1;">FreshPress Laundry Services - Lagos, Nigeria</p>
-  </td></tr>
-</table>
-</td></tr>
-</table>
-</body>
-</html>`;
-}
-
-function staffNotificationEmail(p: {
-  orderId: string; staffName: string;
-  customerName: string; customerPhone: string;
-  address: string; pickupDate: string; timeSlot: string; notes?: string;
-}): string {
-  const rows = [
-    ['Order ID',       p.orderId],
-    ['Customer',       p.customerName],
-    ['Phone',          p.customerPhone],
-    ['Pickup Address', p.address],
-    ['Pickup Date',    fmtDate(p.pickupDate)],
-    ['Time Slot',      SLOTS[p.timeSlot] || p.timeSlot],
-    ...(p.notes ? [['Notes', p.notes]] : []),
-  ];
-
-  return `<!DOCTYPE html>
-<html lang="en">
-<head><meta charset="UTF-8"/><title>New Pickup Assignment - FreshPress</title></head>
-<body style="margin:0;padding:0;background:#f0fdf4;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
-<table width="100%" cellpadding="0" cellspacing="0" style="padding:32px 16px;background:#f0fdf4;">
-<tr><td align="center">
-<table style="max-width:580px;width:100%;background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,.08);">
-  <tr><td style="background:linear-gradient(135deg,#059669,#065f46);padding:28px 40px;text-align:center;">
-    <p style="margin:0 0 4px;color:rgba(255,255,255,.7);font-size:11px;font-weight:700;letter-spacing:2px;text-transform:uppercase;">FreshPress Staff</p>
-    <h1 style="margin:0;color:#fff;font-size:24px;font-weight:900;">New Pickup Assigned</h1>
-    <p style="margin:10px 0 0;color:rgba(255,255,255,.85);font-size:14px;">Hi ${p.staffName}, you have a new pickup job.</p>
-  </td></tr>
-  <tr><td style="padding:28px 40px;">
-    <p style="margin:0 0 20px;font-size:14px;color:#475569;line-height:1.7;">
-      A new order has been assigned to you. Please review the details below and ensure you arrive within the selected time window.
-    </p>
-    <table width="100%" cellpadding="0" cellspacing="0" style="background:#f0fdf4;border-radius:12px;border:1px solid #bbf7d0;margin-bottom:24px;">
-      ${rows.map(([label, value], i) => `
-      <tr><td style="padding:13px 20px;${i < rows.length - 1 ? 'border-bottom:1px solid #bbf7d0;' : ''}">
-        <p style="margin:0;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#059669;">${label}</p>
-        <p style="margin:4px 0 0;font-size:14px;font-weight:600;color:#1e293b;">${value}</p>
-      </td></tr>`).join('')}
-    </table>
-    <p style="font-size:12px;color:#94a3b8;text-align:center;">Log in to the staff portal to view full order details and update the status.</p>
-  </td></tr>
-  <tr><td style="background:#f0fdf4;border-top:1px solid #bbf7d0;padding:16px 40px;text-align:center;">
-    <p style="margin:0;font-size:11px;color:#6b7280;">FreshPress Laundry Services - Lagos, Nigeria</p>
-  </td></tr>
-</table>
-</td></tr>
-</table>
-</body>
-</html>`;
-}
-
-function adminAlertEmail(subject: string, body: string): string {
-  return `<!DOCTYPE html>
-<html><head><meta charset="UTF-8"/></head>
-<body style="font-family:monospace;padding:24px;background:#fff1f2;">
-<div style="max-width:600px;margin:0 auto;background:#fff;border:2px solid #fca5a5;border-radius:12px;padding:24px;">
-  <h2 style="color:#dc2626;margin-top:0;">FreshPress Alert</h2>
-  <p style="color:#1e293b;white-space:pre-wrap;">${body}</p>
-  <p style="font-size:12px;color:#94a3b8;">Sent by FreshPress Edge Function — create-order</p>
-</div>
-</body></html>`;
-}
-
-// ── Main handler ──────────────────────────────────────────────────────────────
-Deno.serve(async (req: Request) => {
-  if (req.method === 'OPTIONS') {
-    return new Response('ok', { headers: corsHeaders });
-  }
-
-  if (req.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
-      status: 405, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-    });
-  }
-
-  // Read secrets
-  const brevoKey    = Deno.env.get('BREVO_API_KEY') ?? '';
-  const brevoSender = Deno.env.get('BREVO_SENDER_EMAIL') ?? '';
-  const brevoList   = Deno.env.get('BREVO_LIST_ID') ?? '';
-  const resendKey   = Deno.env.get('RESEND_API_KEY') ?? '';
-  const serviceKey  = Deno.env.get('SERVICE_ROLE_KEY') ?? '';  // NOT SUPABASE_ prefix
-  const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? '';
-
-  const canEmail = !!(brevoKey && brevoSender);
-
-  try {
-    // ── 1. Validate payload ───────────────────────────────────────
-    const body: OrderPayload = await req.json();
-    const required = ['customer_name','phone','email','address','pickup_date','pickup_time_slot'] as const;
-    for (const f of required) {
-      if (!body[f]?.toString().trim()) {
-        return new Response(JSON.stringify({ success: false, message: `Missing required field: ${f}` }), {
-          status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        });
-      }
-    }
-
-    // ── 2. Generate LAU-XXXXXX order ID ──────────────────────────
-    const orderId = generateOrderId();
-
-    // ── 3. Init Supabase client ───────────────────────────────────
-    const supabase = createClient(supabaseUrl, serviceKey);
-
-    // ── 4. Insert order row ───────────────────────────────────────
-    const { error: dbErr } = await supabase.from('orders').insert({
-      order_id:             orderId,
-      customer_name:        body.customer_name.trim(),
-      phone:                body.phone.trim(),
-      email:                body.email.trim().toLowerCase(),
-      address:              body.address.trim(),
-      pickup_date:          body.pickup_date,
-      pickup_time_slot:     body.pickup_time_slot,
-      special_instructions: body.special_instructions?.trim() || null,
-      status:               'pending',
-      payment_status:       'unpaid',
-      created_at:           new Date().toISOString(),
-    });
-
-    if (dbErr) {
-      console.error('[create-order] DB insert failed:', dbErr.message);
-
-      // Admin alert on DB failure
-      if (canEmail) {
-        await sendBrevoEmail({
-          apiKey: brevoKey, senderEmail: brevoSender,
-          to: [{ email: ADMIN_EMAIL, name: 'FreshPress Admin' }],
-          subject: `[ALERT] Order DB insert failed - ${orderId}`,
-          html: adminAlertEmail(
-            'DB Insert Failure',
-            `Order ID: ${orderId}\nCustomer: ${body.customer_name}\nPhone: ${body.phone}\nError: ${dbErr.message}\nTime: ${new Date().toISOString()}`
-          ),
-        }).catch(e => console.error('[create-order] Admin alert email failed:', e));
-      }
-
-      return new Response(JSON.stringify({ success: false, message: 'Failed to save your order. Please try again.' }), {
-        status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      });
-    }
-
-    console.log(`[create-order] Order ${orderId} inserted`);
-
-    // ── 5. Round-robin staff assignment ───────────────────────────
-    let assignedStaff: StaffMember | null = null;
-
-    const { data: staffRows, error: staffErr } = await supabase
-      .from('staff_members')
-      .select('id, full_name, email, last_assigned_at')
-      .eq('role', 'pickup')
-      .eq('active', true)
-      .eq('availability_status', 'available')   // skip staff on leave or sick
-      .order('last_assigned_at', { ascending: true, nullsFirst: true })
-      .limit(1);
-
-    if (staffErr) {
-      console.error('[create-order] Staff query error:', staffErr.message);
-    } else if (staffRows && staffRows.length > 0) {
-      assignedStaff = staffRows[0] as StaffMember;
-      const now = new Date().toISOString();
-
-      // Update staff last_assigned_at
-      await supabase
-        .from('staff_members')
-        .update({ last_assigned_at: now })
-        .eq('id', assignedStaff.id);
-
-      // Patch order with assigned staff
-      await supabase
-        .from('orders')
-        .update({ assigned_staff_id: assignedStaff.id })
-        .eq('order_id', orderId);
-
-      console.log(`[create-order] Assigned to staff: ${assignedStaff.full_name} (${assignedStaff.id})`);
-    } else {
-      console.warn('[create-order] No active pickup staff found');
-    }
-
-    // ── 6. Customer confirmation email ────────────────────────────
-    const customerHtml = customerConfirmationEmail({
-      orderId, customerName: body.customer_name, pickupDate: body.pickup_date,
-      timeSlot: body.pickup_time_slot, address: body.address,
-      phone: body.phone, notes: body.special_instructions,
-    });
-
-    let emailSent = false;
-
-    // Primary: Brevo (sends to any email, no domain needed)
-    if (canEmail) {
-      emailSent = await sendBrevoEmail({
-        apiKey: brevoKey, senderEmail: brevoSender,
-        to: [{ email: body.email, name: body.customer_name }],
-        subject: `Order Confirmed - ${orderId} | FreshPress`,
-        html: customerHtml,
-      });
-      if (emailSent) console.log(`[create-order] Customer email sent via Brevo to ${body.email}`);
-    }
-
-    // Fallback: Resend (only reaches account owner email in sandbox)
-    if (!emailSent && resendKey) {
-      await fetch('https://api.resend.com/emails', {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${resendKey}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          from: 'FreshPress <onboarding@resend.dev>', to: [body.email],
-          subject: `Order Confirmed - ${orderId} | FreshPress`, html: customerHtml,
-        }),
-      }).catch(e => console.error('[create-order] Resend fallback failed:', e));
-    }
-
-    // ── 7. Staff notification email ───────────────────────────────
-    if (canEmail) {
-      if (assignedStaff && assignedStaff.email) {
-        // Notify assigned staff
-        await sendBrevoEmail({
-          apiKey: brevoKey, senderEmail: brevoSender,
-          to: [{ email: assignedStaff.email, name: assignedStaff.full_name }],
-          subject: `New Pickup Assigned - ${orderId} | FreshPress`,
-          html: staffNotificationEmail({
-            orderId, staffName: assignedStaff.full_name,
-            customerName: body.customer_name, customerPhone: body.phone,
-            address: body.address, pickupDate: body.pickup_date,
-            timeSlot: body.pickup_time_slot, notes: body.special_instructions,
-          }),
-        }).catch(e => console.error('[create-order] Staff notification failed:', e));
-        console.log(`[create-order] Staff notification sent to ${assignedStaff.email}`);
-      } else {
-        // No staff available — alert admin
-        await sendBrevoEmail({
-          apiKey: brevoKey, senderEmail: brevoSender,
-          to: [{ email: ADMIN_EMAIL, name: 'FreshPress Admin' }],
-          subject: `[ALERT] No staff available for order ${orderId}`,
-          html: adminAlertEmail(
-            'No Pickup Staff Available',
-            `A new order was placed but no active pickup staff was found.\n\nOrder ID: ${orderId}\nCustomer: ${body.customer_name}\nPhone: ${body.phone}\nAddress: ${body.address}\nPickup Date: ${fmtDate(body.pickup_date)}\nTime: ${SLOTS[body.pickup_time_slot]}\n\nPlease assign a staff member manually.`
-          ),
-        }).catch(e => console.error('[create-order] Admin no-staff alert failed:', e));
-        console.warn('[create-order] Admin alerted: no pickup staff found');
-      }
-    }
-
-    // ── 8. Brevo CRM upsert ───────────────────────────────────────
-    if (brevoKey && brevoList) {
-      await fetch('https://api.brevo.com/v3/contacts', {
-        method: 'POST',
-        headers: { 'api-key': brevoKey, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          email:         body.email,
-          updateEnabled: true,
-          attributes: {
-            FIRSTNAME: body.customer_name.split(' ')[0],
-            LASTNAME:  body.customer_name.split(' ').slice(1).join(' ') || '',
-            SMS:       body.phone,
-            SOURCE:    'FreshPress Order Form',
-          },
-          listIds: [parseInt(brevoList, 10)],
-        }),
-      }).catch(e => console.error('[create-order] Brevo CRM upsert failed:', e));
-    }
-
-    // ── 9. WhatsApp via Evolution API (uncomment when Oracle ready) ─
-    // const evoUrl  = Deno.env.get('EVOLUTION_API_URL');
-    // const evoKey  = Deno.env.get('EVOLUTION_API_KEY');
-    // const evoInst = Deno.env.get('EVOLUTION_INSTANCE_NAME');
-    // if (evoUrl && evoKey && evoInst) {
-    //   const raw = body.phone.replace(/\D/g, '');
-    //   const wa  = raw.startsWith('0') ? '234' + raw.slice(1) : raw;
-    //   const msg =
-    //     `Hello ${body.customer_name}! Your FreshPress order *${orderId}* is confirmed.\n\n` +
-    //     `Pickup: *${fmtDate(body.pickup_date)}*\nTime: *${SLOTS[body.pickup_time_slot]}*\n` +
-    //     `Address: ${body.address}\n\nTrack: fresh-press-chi.vercel.app/track\n` +
-    //     `Questions? Call +234 811 314 3272`;
-    //   await fetch(`${evoUrl}/message/sendText/${evoInst}`, {
-    //     method: 'POST',
-    //     headers: { 'Content-Type': 'application/json', 'apikey': evoKey },
-    //     body: JSON.stringify({ number: wa, textMessage: { text: msg } }),
-    //   }).catch(e => console.error('[create-order] WhatsApp failed:', e));
-    // }
-
-    // ── 10. Return success ────────────────────────────────────────
-    return new Response(JSON.stringify({
-      success:       true,
-      orderId,
-      customerName:  body.customer_name,
-      pickupDate:    body.pickup_date,
-      timeSlot:      SLOTS[body.pickup_time_slot] || body.pickup_time_slot,
-      assignedStaff: assignedStaff?.full_name ?? null,
-      message:       'Order confirmed. Check your email for details.',
-    }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-
-  } catch (err) {
-    console.error('[create-order] Unhandled error:', err);
-    return new Response(JSON.stringify({ success: false, message: 'An unexpected error occurred. Please try again.' }), {
-      status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-    });
-  }
-});
+-/-*-*-
+- -*- -F-r-e-s-h-P-r-e-s-s- -�- -c-r-e-a-t-e---o-r-d-e-r- -E-d-g-e- -F-u-n-c-t-i-o-n- -(-s-t-a-n-d-a-l-o-n-e-,- -d-a-s-h-b-o-a-r-d---r-e-a-d-y-)-
+- -*-
+- -*- -H-O-W- -T-O- -D-E-P-L-O-Y-:-
+- -*- - -1-.- -G-o- -t-o-:- -h-t-t-p-s-:-/-/-s-u-p-a-b-a-s-e-.-c-o-m-/-d-a-s-h-b-o-a-r-d-/-p-r-o-j-e-c-t-/-p-o-f-i-y-t-k-p-d-u-p-r-b-k-m-g-u-n-b-g-/-f-u-n-c-t-i-o-n-s-
+- -*- - -2-.- -O-p-e-n- -t-h-e- -c-r-e-a-t-e---o-r-d-e-r- -f-u-n-c-t-i-o-n- --->- -E-d-i-t- --->- -p-a-s-t-e- -e-n-t-i-r-e- -f-i-l-e- --->- -D-e-p-l-o-y-
+- -*-
+- -*- -S-e-c-r-e-t-s- -r-e-q-u-i-r-e-d- -(-D-a-s-h-b-o-a-r-d- --->- -E-d-g-e- -F-u-n-c-t-i-o-n-s- --->- -S-e-c-r-e-t-s-)-:-
+- -*- - -S-E-R-V-I-C-E-_-R-O-L-E-_-K-E-Y- - - - - - -S-u-p-a-b-a-s-e- -s-e-r-v-i-c-e- -r-o-l-e- -k-e-y- -(-N-O-T- -p-r-e-f-i-x-e-d- -w-i-t-h- -S-U-P-A-B-A-S-E-_-)-
+- -*- - -B-R-E-V-O-_-A-P-I-_-K-E-Y- - - - - - - - - -B-r-e-v-o- -A-P-I- -k-e-y-
+- -*- - -B-R-E-V-O-_-S-E-N-D-E-R-_-E-M-A-I-L- - - - -V-e-r-i-f-i-e-d- -s-e-n-d-e-r- -e-m-a-i-l- -i-n- -B-r-e-v-o-
+- -*- - -B-R-E-V-O-_-L-I-S-T-_-I-D- - - - - - - - - -B-r-e-v-o- -c-o-n-t-a-c-t-s- -l-i-s-t- -I-D- -(-o-p-t-i-o-n-a-l-,- -f-o-r- -C-R-M-)-
+- -*- - -R-E-S-E-N-D-_-A-P-I-_-K-E-Y- - - - - - - - -R-e-s-e-n-d- -k-e-y- -(-f-a-l-l-b-a-c-k- -o-n-l-y-)-
+- -*-
+- -*- -F-l-o-w-:-
+- -*- - -1-.- -V-a-l-i-d-a-t-e- -p-a-y-l-o-a-d-
+- -*- - -2-.- -G-e-n-e-r-a-t-e- -L-A-U---X-X-X-X-X-X- -o-r-d-e-r- -I-D-
+- -*- - -3-.- -I-n-s-e-r-t- -o-r-d-e-r- -i-n-t-o- -S-u-p-a-b-a-s-e- -(-a-d-m-i-n- -a-l-e-r-t- -o-n- -f-a-i-l-u-r-e-)-
+- -*- - -4-.- -R-o-u-n-d---r-o-b-i-n- -s-t-a-f-f- -a-s-s-i-g-n-m-e-n-t-
+- -*- - -5-.- -D-i-s-p-a-t-c-h- -E-m-a-i-l-s- -a-n-d- -C-R-M- -c-o-n-c-u-r-r-e-n-t-l-y-
+- -*-/-
+-
+-i-m-p-o-r-t- -{- -c-r-e-a-t-e-C-l-i-e-n-t- -}- -f-r-o-m- -'-h-t-t-p-s-:-/-/-e-s-m-.-s-h-/-@-s-u-p-a-b-a-s-e-/-s-u-p-a-b-a-s-e---j-s-@-2-.-3-9-.-7-'-;-
+-
+-/-/- ----- -C-O-R-S- ---------------------------------------------------------------------------------------------------------------------------------------------
+-c-o-n-s-t- -c-o-r-s-H-e-a-d-e-r-s- -=- -{-
+- - -'-A-c-c-e-s-s---C-o-n-t-r-o-l---A-l-l-o-w---O-r-i-g-i-n-'-:- -'-*-'-,-
+- - -'-A-c-c-e-s-s---C-o-n-t-r-o-l---A-l-l-o-w---H-e-a-d-e-r-s-'-:- -'-a-u-t-h-o-r-i-z-a-t-i-o-n-,- -x---c-l-i-e-n-t---i-n-f-o-,- -a-p-i-k-e-y-,- -c-o-n-t-e-n-t---t-y-p-e-'-,-
+- - -'-A-c-c-e-s-s---C-o-n-t-r-o-l---A-l-l-o-w---M-e-t-h-o-d-s-'-:- -'-P-O-S-T-,- -O-P-T-I-O-N-S-'-,-
+-}-;-
+-
+-c-o-n-s-t- -A-D-M-I-N-_-E-M-A-I-L- -=- -'-f-a-l-o-y-e-s-a-m-u-e-l-4-0-0-@-g-m-a-i-l-.-c-o-m-'-;-
+-
+-/-/- ----- -T-y-p-e-s- -------------------------------------------------------------------------------------------------------------------------------------------
+-i-n-t-e-r-f-a-c-e- -O-r-d-e-r-P-a-y-l-o-a-d- -{-
+- - -c-u-s-t-o-m-e-r-_-n-a-m-e-:- -s-t-r-i-n-g-;-
+- - -p-h-o-n-e-:- -s-t-r-i-n-g-;-
+- - -e-m-a-i-l-:- -s-t-r-i-n-g-;-
+- - -a-d-d-r-e-s-s-:- -s-t-r-i-n-g-;-
+- - -p-i-c-k-u-p-_-d-a-t-e-:- -s-t-r-i-n-g-;-
+- - -p-i-c-k-u-p-_-t-i-m-e-_-s-l-o-t-:- -'-m-o-r-n-i-n-g-'- -|- -'-a-f-t-e-r-n-o-o-n-'- -|- -'-e-v-e-n-i-n-g-'-;-
+- - -s-p-e-c-i-a-l-_-i-n-s-t-r-u-c-t-i-o-n-s-?-:- -s-t-r-i-n-g-;-
+- - -s-o-u-r-c-e-?-:- -'-w-e-b-s-i-t-e-'- -|- -'-p-h-o-n-e-'- -|- -'-w-h-a-t-s-a-p-p-'- -|- -'-w-a-l-k-i-n-'-;-
+-}-
+-
+-i-n-t-e-r-f-a-c-e- -S-t-a-f-f-M-e-m-b-e-r- -{-
+- - -i-d-:- -s-t-r-i-n-g-;-
+- - -f-u-l-l-_-n-a-m-e-:- -s-t-r-i-n-g-;-
+- - -e-m-a-i-l-:- -s-t-r-i-n-g-;-
+- - -l-a-s-t-_-a-s-s-i-g-n-e-d-_-a-t-:- -s-t-r-i-n-g- -|- -n-u-l-l-;-
+-}-
+-
+-/-/- ----- -H-e-l-p-e-r-s- ---------------------------------------------------------------------------------------------------------------------------------------
+-f-u-n-c-t-i-o-n- -e-s-c-a-p-e-H-t-m-l-(-s-t-r-:- -s-t-r-i-n-g-)- -{-
+- - -i-f- -(-!-s-t-r-)- -r-e-t-u-r-n- -'-'-;-
+- - -r-e-t-u-r-n- -s-t-r-.-t-o-S-t-r-i-n-g-(-)-.-r-e-p-l-a-c-e-(-/-[-&-<->-'-"-]-/-g-,- -
+- - - - -t-a-g- -=->- -(-{-
+- - - - - - -'-&-'-:- -'-&-a-m-p-;-'-,- -'-<-'-:- -'-&-l-t-;-'-,- -'->-'-:- -'-&-g-t-;-'-,- -"-'-"-:- -'-&-#-3-9-;-'-,- -'-"-'-:- -'-&-q-u-o-t-;-'-
+- - - - -}-[-t-a-g-]- -|-|- -t-a-g-)-
+- - -)-;-
+-}-
+-
+-f-u-n-c-t-i-o-n- -g-e-n-e-r-a-t-e-O-r-d-e-r-I-d-(-)-:- -s-t-r-i-n-g- -{-
+- - -c-o-n-s-t- -d-i-g-i-t-s- -=- -M-a-t-h-.-f-l-o-o-r-(-1-0-0-0-0-0- -+- -M-a-t-h-.-r-a-n-d-o-m-(-)- -*- -9-0-0-0-0-0-)-;-
+- - -r-e-t-u-r-n- -`-L-A-U---$-{-d-i-g-i-t-s-}-`-;-
+-}-
+-
+-c-o-n-s-t- -S-L-O-T-S-:- -R-e-c-o-r-d-<-s-t-r-i-n-g-,- -s-t-r-i-n-g->- -=- -{-
+- - -m-o-r-n-i-n-g-:- - - -'-M-o-r-n-i-n-g- -(-9-A-M- --- -1-2-P-M-)-'-,-
+- - -a-f-t-e-r-n-o-o-n-:- -'-A-f-t-e-r-n-o-o-n- -(-1-P-M- --- -4-P-M-)-'-,-
+- - -e-v-e-n-i-n-g-:- - - -'-E-v-e-n-i-n-g- -(-4-P-M- --- -7-P-M-)-'-,-
+-}-;-
+-
+-f-u-n-c-t-i-o-n- -f-m-t-D-a-t-e-(-d-:- -s-t-r-i-n-g-)-:- -s-t-r-i-n-g- -{-
+- - -r-e-t-u-r-n- -n-e-w- -D-a-t-e-(-d-)-.-t-o-L-o-c-a-l-e-D-a-t-e-S-t-r-i-n-g-(-'-e-n---N-G-'-,- -{-
+- - - - -w-e-e-k-d-a-y-:- -'-l-o-n-g-'-,- -y-e-a-r-:- -'-n-u-m-e-r-i-c-'-,- -m-o-n-t-h-:- -'-l-o-n-g-'-,- -d-a-y-:- -'-n-u-m-e-r-i-c-'-,-
+- - -}-)-;-
+-}-
+-
+-/-/- ----- -B-r-e-v-o- -e-m-a-i-l- -s-e-n-d-e-r- -----------------------------------------------------------------------------------------------------------------
+-a-s-y-n-c- -f-u-n-c-t-i-o-n- -s-e-n-d-B-r-e-v-o-E-m-a-i-l-(-p-a-r-a-m-s-:- -{-
+- - -a-p-i-K-e-y-:- -s-t-r-i-n-g-;-
+- - -s-e-n-d-e-r-E-m-a-i-l-:- -s-t-r-i-n-g-;-
+- - -t-o-:- -{- -e-m-a-i-l-:- -s-t-r-i-n-g-;- -n-a-m-e-?-:- -s-t-r-i-n-g- -}-[-]-;-
+- - -s-u-b-j-e-c-t-:- -s-t-r-i-n-g-;-
+- - -h-t-m-l-:- -s-t-r-i-n-g-;-
+-}-)-:- -P-r-o-m-i-s-e-<-b-o-o-l-e-a-n->- -{-
+- - -c-o-n-s-t- -r-e-s- -=- -a-w-a-i-t- -f-e-t-c-h-(-'-h-t-t-p-s-:-/-/-a-p-i-.-b-r-e-v-o-.-c-o-m-/-v-3-/-s-m-t-p-/-e-m-a-i-l-'-,- -{-
+- - - - -m-e-t-h-o-d-:- -'-P-O-S-T-'-,-
+- - - - -h-e-a-d-e-r-s-:- -{- -'-a-p-i---k-e-y-'-:- -p-a-r-a-m-s-.-a-p-i-K-e-y-,- -'-C-o-n-t-e-n-t---T-y-p-e-'-:- -'-a-p-p-l-i-c-a-t-i-o-n-/-j-s-o-n-'- -}-,-
+- - - - -b-o-d-y-:- -J-S-O-N-.-s-t-r-i-n-g-i-f-y-(-{-
+- - - - - - -s-e-n-d-e-r-:- - - - - - -{- -n-a-m-e-:- -'-F-r-e-s-h-P-r-e-s-s- -L-a-u-n-d-r-y-'-,- -e-m-a-i-l-:- -p-a-r-a-m-s-.-s-e-n-d-e-r-E-m-a-i-l- -}-,-
+- - - - - - -t-o-:- - - - - - - - - - -p-a-r-a-m-s-.-t-o-,-
+- - - - - - -s-u-b-j-e-c-t-:- - - - - -p-a-r-a-m-s-.-s-u-b-j-e-c-t-,-
+- - - - - - -h-t-m-l-C-o-n-t-e-n-t-:- -p-a-r-a-m-s-.-h-t-m-l-,-
+- - - - -}-)-,-
+- - -}-)-;-
+-
+- - -i-f- -(-!-r-e-s-.-o-k-)- -{-
+- - - - -c-o-n-s-t- -e-r-r- -=- -a-w-a-i-t- -r-e-s-.-t-e-x-t-(-)-.-c-a-t-c-h-(-(-)- -=->- -'-u-n-k-n-o-w-n-'-)-;-
+- - - - -c-o-n-s-o-l-e-.-e-r-r-o-r-(-'-[-c-r-e-a-t-e---o-r-d-e-r-]- -B-r-e-v-o- -s-e-n-d- -e-r-r-o-r-:-'-,- -e-r-r-)-;-
+- - - - -r-e-t-u-r-n- -f-a-l-s-e-;-
+- - -}-
+- - -r-e-t-u-r-n- -t-r-u-e-;-
+-}-
+-
+-/-/- ----- -E-m-a-i-l- -t-e-m-p-l-a-t-e-s- -----------------------------------------------------------------------------------------------------------------------
+-
+-f-u-n-c-t-i-o-n- -c-u-s-t-o-m-e-r-C-o-n-f-i-r-m-a-t-i-o-n-E-m-a-i-l-(-p-:- -{-
+- - -o-r-d-e-r-I-d-:- -s-t-r-i-n-g-;- -c-u-s-t-o-m-e-r-N-a-m-e-:- -s-t-r-i-n-g-;- -p-i-c-k-u-p-D-a-t-e-:- -s-t-r-i-n-g-;-
+- - -t-i-m-e-S-l-o-t-:- -s-t-r-i-n-g-;- -a-d-d-r-e-s-s-:- -s-t-r-i-n-g-;- -p-h-o-n-e-:- -s-t-r-i-n-g-;- -n-o-t-e-s-?-:- -s-t-r-i-n-g-;-
+-}-)-:- -s-t-r-i-n-g- -{-
+- - -c-o-n-s-t- -r-o-w-s- -=- -[-
+- - - - -[-'-O-r-d-e-r- -I-D-'-,- - - - -p-.-o-r-d-e-r-I-d-]-,-
+- - - - -[-'-P-i-c-k-u-p- -D-a-t-e-'-,- -f-m-t-D-a-t-e-(-p-.-p-i-c-k-u-p-D-a-t-e-)-]-,-
+- - - - -[-'-T-i-m-e- -S-l-o-t-'-,- - - -S-L-O-T-S-[-p-.-t-i-m-e-S-l-o-t-]- -|-|- -p-.-t-i-m-e-S-l-o-t-]-,-
+- - - - -[-'-A-d-d-r-e-s-s-'-,- - - - - -e-s-c-a-p-e-H-t-m-l-(-p-.-a-d-d-r-e-s-s-)-]-,-
+- - - - -[-'-W-h-a-t-s-A-p-p-'-,- - - - -e-s-c-a-p-e-H-t-m-l-(-p-.-p-h-o-n-e-)-]-,-
+- - - - -.-.-.-(-p-.-n-o-t-e-s- -?- -[-[-'-N-o-t-e-s-'-,- -e-s-c-a-p-e-H-t-m-l-(-p-.-n-o-t-e-s-)-]-]- -:- -[-]-)-,-
+- - -]-;-
+-
+- - -r-e-t-u-r-n- -`-<-!-D-O-C-T-Y-P-E- -h-t-m-l->-
+-<-h-t-m-l- -l-a-n-g-=-"-e-n-"->-
+-<-h-e-a-d->-<-m-e-t-a- -c-h-a-r-s-e-t-=-"-U-T-F---8-"-/->-<-t-i-t-l-e->-O-r-d-e-r- -C-o-n-f-i-r-m-e-d- --- -F-r-e-s-h-P-r-e-s-s-<-/-t-i-t-l-e->-<-/-h-e-a-d->-
+-<-b-o-d-y- -s-t-y-l-e-=-"-m-a-r-g-i-n-:-0-;-p-a-d-d-i-n-g-:-0-;-b-a-c-k-g-r-o-u-n-d-:-#-f-0-f-4-f-f-;-f-o-n-t---f-a-m-i-l-y-:---a-p-p-l-e---s-y-s-t-e-m-,-B-l-i-n-k-M-a-c-S-y-s-t-e-m-F-o-n-t-,-'-S-e-g-o-e- -U-I-'-,-s-a-n-s---s-e-r-i-f-;-"->-
+-<-t-a-b-l-e- -w-i-d-t-h-=-"-1-0-0-%-"- -c-e-l-l-p-a-d-d-i-n-g-=-"-0-"- -c-e-l-l-s-p-a-c-i-n-g-=-"-0-"- -s-t-y-l-e-=-"-p-a-d-d-i-n-g-:-3-2-p-x- -1-6-p-x-;-b-a-c-k-g-r-o-u-n-d-:-#-f-0-f-4-f-f-;-"->-
+-<-t-r->-<-t-d- -a-l-i-g-n-=-"-c-e-n-t-e-r-"->-
+-<-t-a-b-l-e- -s-t-y-l-e-=-"-m-a-x---w-i-d-t-h-:-5-8-0-p-x-;-w-i-d-t-h-:-1-0-0-%-;-b-a-c-k-g-r-o-u-n-d-:-#-f-f-f-;-b-o-r-d-e-r---r-a-d-i-u-s-:-1-6-p-x-;-o-v-e-r-f-l-o-w-:-h-i-d-d-e-n-;-b-o-x---s-h-a-d-o-w-:-0- -4-p-x- -2-4-p-x- -r-g-b-a-(-0-,-0-,-0-,-.-0-8-)-;-"->-
+- - -<-t-r->-<-t-d- -s-t-y-l-e-=-"-b-a-c-k-g-r-o-u-n-d-:-l-i-n-e-a-r---g-r-a-d-i-e-n-t-(-1-3-5-d-e-g-,-#-3-b-5-b-d-b-,-#-4-c-3-d-9-e-)-;-p-a-d-d-i-n-g-:-3-2-p-x- -4-0-p-x-;-t-e-x-t---a-l-i-g-n-:-c-e-n-t-e-r-;-"->-
+- - - - -<-p- -s-t-y-l-e-=-"-m-a-r-g-i-n-:-0- -0- -4-p-x-;-c-o-l-o-r-:-r-g-b-a-(-2-5-5-,-2-5-5-,-2-5-5-,-.-7-)-;-f-o-n-t---s-i-z-e-:-1-1-p-x-;-f-o-n-t---w-e-i-g-h-t-:-7-0-0-;-l-e-t-t-e-r---s-p-a-c-i-n-g-:-2-p-x-;-t-e-x-t---t-r-a-n-s-f-o-r-m-:-u-p-p-e-r-c-a-s-e-;-"->-F-r-e-s-h-P-r-e-s-s- -L-a-u-n-d-r-y-<-/-p->-
+- - - - -<-h-1- -s-t-y-l-e-=-"-m-a-r-g-i-n-:-0-;-c-o-l-o-r-:-#-f-f-f-;-f-o-n-t---s-i-z-e-:-2-6-p-x-;-f-o-n-t---w-e-i-g-h-t-:-9-0-0-;-"->-O-r-d-e-r- -C-o-n-f-i-r-m-e-d-<-/-h-1->-
+- - - - -<-p- -s-t-y-l-e-=-"-m-a-r-g-i-n-:-1-0-p-x- -0- -0-;-c-o-l-o-r-:-r-g-b-a-(-2-5-5-,-2-5-5-,-2-5-5-,-.-8-)-;-f-o-n-t---s-i-z-e-:-1-4-p-x-;-"->-Y-o-u-r- -l-a-u-n-d-r-y- -i-s- -i-n- -g-o-o-d- -h-a-n-d-s-.-<-/-p->-
+- - -<-/-t-d->-<-/-t-r->-
+- - -<-t-r->-<-t-d- -s-t-y-l-e-=-"-p-a-d-d-i-n-g-:-3-2-p-x- -4-0-p-x-;-"->-
+- - - - -<-p- -s-t-y-l-e-=-"-m-a-r-g-i-n-:-0- -0- -2-0-p-x-;-f-o-n-t---s-i-z-e-:-1-5-p-x-;-c-o-l-o-r-:-#-1-e-2-9-3-b-;-"->-H-i- -<-s-t-r-o-n-g->-$-{-e-s-c-a-p-e-H-t-m-l-(-p-.-c-u-s-t-o-m-e-r-N-a-m-e-)-}-<-/-s-t-r-o-n-g->-,-<-/-p->-
+- - - - -<-p- -s-t-y-l-e-=-"-m-a-r-g-i-n-:-0- -0- -2-4-p-x-;-f-o-n-t---s-i-z-e-:-1-4-p-x-;-c-o-l-o-r-:-#-4-7-5-5-6-9-;-l-i-n-e---h-e-i-g-h-t-:-1-.-7-;-"->-Y-o-u-r- -p-i-c-k-u-p- -h-a-s- -b-e-e-n- -c-o-n-f-i-r-m-e-d-.- -O-u-r- -c-o-u-r-i-e-r- -w-i-l-l- -a-r-r-i-v-e- -a-t- -y-o-u-r- -a-d-d-r-e-s-s- -d-u-r-i-n-g- -t-h-e- -w-i-n-d-o-w- -b-e-l-o-w-.-<-/-p->-
+- - - - -<-t-a-b-l-e- -w-i-d-t-h-=-"-1-0-0-%-"- -c-e-l-l-p-a-d-d-i-n-g-=-"-0-"- -c-e-l-l-s-p-a-c-i-n-g-=-"-0-"- -s-t-y-l-e-=-"-b-a-c-k-g-r-o-u-n-d-:-#-f-8-f-a-f-f-;-b-o-r-d-e-r---r-a-d-i-u-s-:-1-2-p-x-;-b-o-r-d-e-r-:-1-p-x- -s-o-l-i-d- -#-e-0-e-7-f-f-;-m-a-r-g-i-n---b-o-t-t-o-m-:-2-4-p-x-;-"->-
+- - - - - - -$-{-r-o-w-s-.-m-a-p-(-(-[-l-a-b-e-l-,- -v-a-l-u-e-]-,- -i-)- -=->- -`-
+- - - - - - -<-t-r->-<-t-d- -s-t-y-l-e-=-"-p-a-d-d-i-n-g-:-1-3-p-x- -2-0-p-x-;-$-{-i- -<- -r-o-w-s-.-l-e-n-g-t-h- --- -1- -?- -'-b-o-r-d-e-r---b-o-t-t-o-m-:-1-p-x- -s-o-l-i-d- -#-e-0-e-7-f-f-;-'- -:- -'-'-}-"->-
+- - - - - - - - -<-p- -s-t-y-l-e-=-"-m-a-r-g-i-n-:-0-;-f-o-n-t---s-i-z-e-:-1-0-p-x-;-f-o-n-t---w-e-i-g-h-t-:-7-0-0-;-t-e-x-t---t-r-a-n-s-f-o-r-m-:-u-p-p-e-r-c-a-s-e-;-l-e-t-t-e-r---s-p-a-c-i-n-g-:-1-p-x-;-c-o-l-o-r-:-#-6-3-6-6-f-1-;-"->-$-{-l-a-b-e-l-}-<-/-p->-
+- - - - - - - - -<-p- -s-t-y-l-e-=-"-m-a-r-g-i-n-:-4-p-x- -0- -0-;-f-o-n-t---s-i-z-e-:-1-4-p-x-;-f-o-n-t---w-e-i-g-h-t-:-6-0-0-;-c-o-l-o-r-:-#-1-e-2-9-3-b-;-"->-$-{-v-a-l-u-e-}-<-/-p->-
+- - - - - - -<-/-t-d->-<-/-t-r->-`-)-.-j-o-i-n-(-'-'-)-}-
+- - - - -<-/-t-a-b-l-e->-
+- - -<-/-t-d->-<-/-t-r->-
+-<-/-t-a-b-l-e->-
+-<-/-t-d->-<-/-t-r->-
+-<-/-t-a-b-l-e->-
+-<-/-b-o-d-y->-
+-<-/-h-t-m-l->-`-;-
+-}-
+-
+-f-u-n-c-t-i-o-n- -s-t-a-f-f-N-o-t-i-f-i-c-a-t-i-o-n-E-m-a-i-l-(-p-:- -{-
+- - -o-r-d-e-r-I-d-:- -s-t-r-i-n-g-;- -s-t-a-f-f-N-a-m-e-:- -s-t-r-i-n-g-;-
+- - -c-u-s-t-o-m-e-r-N-a-m-e-:- -s-t-r-i-n-g-;- -c-u-s-t-o-m-e-r-P-h-o-n-e-:- -s-t-r-i-n-g-;-
+- - -a-d-d-r-e-s-s-:- -s-t-r-i-n-g-;- -p-i-c-k-u-p-D-a-t-e-:- -s-t-r-i-n-g-;- -t-i-m-e-S-l-o-t-:- -s-t-r-i-n-g-;- -n-o-t-e-s-?-:- -s-t-r-i-n-g-;-
+-}-)-:- -s-t-r-i-n-g- -{-
+- - -c-o-n-s-t- -r-o-w-s- -=- -[-
+- - - - -[-'-O-r-d-e-r- -I-D-'-,- - - - - - - -p-.-o-r-d-e-r-I-d-]-,-
+- - - - -[-'-C-u-s-t-o-m-e-r-'-,- - - - - - - -e-s-c-a-p-e-H-t-m-l-(-p-.-c-u-s-t-o-m-e-r-N-a-m-e-)-]-,-
+- - - - -[-'-P-h-o-n-e-'-,- - - - - - - - - - -e-s-c-a-p-e-H-t-m-l-(-p-.-c-u-s-t-o-m-e-r-P-h-o-n-e-)-]-,-
+- - - - -[-'-P-i-c-k-u-p- -A-d-d-r-e-s-s-'-,- -e-s-c-a-p-e-H-t-m-l-(-p-.-a-d-d-r-e-s-s-)-]-,-
+- - - - -[-'-P-i-c-k-u-p- -D-a-t-e-'-,- - - - -f-m-t-D-a-t-e-(-p-.-p-i-c-k-u-p-D-a-t-e-)-]-,-
+- - - - -[-'-T-i-m-e- -S-l-o-t-'-,- - - - - - -S-L-O-T-S-[-p-.-t-i-m-e-S-l-o-t-]- -|-|- -p-.-t-i-m-e-S-l-o-t-]-,-
+- - - - -.-.-.-(-p-.-n-o-t-e-s- -?- -[-[-'-N-o-t-e-s-'-,- -e-s-c-a-p-e-H-t-m-l-(-p-.-n-o-t-e-s-)-]-]- -:- -[-]-)-,-
+- - -]-;-
+-
+- - -r-e-t-u-r-n- -`-<-!-D-O-C-T-Y-P-E- -h-t-m-l->-
+-<-h-t-m-l- -l-a-n-g-=-"-e-n-"->-
+-<-h-e-a-d->-<-m-e-t-a- -c-h-a-r-s-e-t-=-"-U-T-F---8-"-/->-<-t-i-t-l-e->-N-e-w- -P-i-c-k-u-p- -A-s-s-i-g-n-m-e-n-t- --- -F-r-e-s-h-P-r-e-s-s-<-/-t-i-t-l-e->-<-/-h-e-a-d->-
+-<-b-o-d-y- -s-t-y-l-e-=-"-m-a-r-g-i-n-:-0-;-p-a-d-d-i-n-g-:-0-;-b-a-c-k-g-r-o-u-n-d-:-#-f-0-f-d-f-4-;-f-o-n-t---f-a-m-i-l-y-:---a-p-p-l-e---s-y-s-t-e-m-,-B-l-i-n-k-M-a-c-S-y-s-t-e-m-F-o-n-t-,-'-S-e-g-o-e- -U-I-'-,-s-a-n-s---s-e-r-i-f-;-"->-
+-<-t-a-b-l-e- -w-i-d-t-h-=-"-1-0-0-%-"- -c-e-l-l-p-a-d-d-i-n-g-=-"-0-"- -c-e-l-l-s-p-a-c-i-n-g-=-"-0-"- -s-t-y-l-e-=-"-p-a-d-d-i-n-g-:-3-2-p-x- -1-6-p-x-;-b-a-c-k-g-r-o-u-n-d-:-#-f-0-f-d-f-4-;-"->-
+-<-t-r->-<-t-d- -a-l-i-g-n-=-"-c-e-n-t-e-r-"->-
+-<-t-a-b-l-e- -s-t-y-l-e-=-"-m-a-x---w-i-d-t-h-:-5-8-0-p-x-;-w-i-d-t-h-:-1-0-0-%-;-b-a-c-k-g-r-o-u-n-d-:-#-f-f-f-;-b-o-r-d-e-r---r-a-d-i-u-s-:-1-6-p-x-;-o-v-e-r-f-l-o-w-:-h-i-d-d-e-n-;-b-o-x---s-h-a-d-o-w-:-0- -4-p-x- -2-4-p-x- -r-g-b-a-(-0-,-0-,-0-,-.-0-8-)-;-"->-
+- - -<-t-r->-<-t-d- -s-t-y-l-e-=-"-b-a-c-k-g-r-o-u-n-d-:-l-i-n-e-a-r---g-r-a-d-i-e-n-t-(-1-3-5-d-e-g-,-#-0-5-9-6-6-9-,-#-0-6-5-f-4-6-)-;-p-a-d-d-i-n-g-:-2-8-p-x- -4-0-p-x-;-t-e-x-t---a-l-i-g-n-:-c-e-n-t-e-r-;-"->-
+- - - - -<-p- -s-t-y-l-e-=-"-m-a-r-g-i-n-:-0- -0- -4-p-x-;-c-o-l-o-r-:-r-g-b-a-(-2-5-5-,-2-5-5-,-2-5-5-,-.-7-)-;-f-o-n-t---s-i-z-e-:-1-1-p-x-;-f-o-n-t---w-e-i-g-h-t-:-7-0-0-;-l-e-t-t-e-r---s-p-a-c-i-n-g-:-2-p-x-;-t-e-x-t---t-r-a-n-s-f-o-r-m-:-u-p-p-e-r-c-a-s-e-;-"->-F-r-e-s-h-P-r-e-s-s- -S-t-a-f-f-<-/-p->-
+- - - - -<-h-1- -s-t-y-l-e-=-"-m-a-r-g-i-n-:-0-;-c-o-l-o-r-:-#-f-f-f-;-f-o-n-t---s-i-z-e-:-2-4-p-x-;-f-o-n-t---w-e-i-g-h-t-:-9-0-0-;-"->-N-e-w- -P-i-c-k-u-p- -A-s-s-i-g-n-e-d-<-/-h-1->-
+- - - - -<-p- -s-t-y-l-e-=-"-m-a-r-g-i-n-:-1-0-p-x- -0- -0-;-c-o-l-o-r-:-r-g-b-a-(-2-5-5-,-2-5-5-,-2-5-5-,-.-8-5-)-;-f-o-n-t---s-i-z-e-:-1-4-p-x-;-"->-H-i- -$-{-e-s-c-a-p-e-H-t-m-l-(-p-.-s-t-a-f-f-N-a-m-e-)-}-,- -y-o-u- -h-a-v-e- -a- -n-e-w- -p-i-c-k-u-p- -j-o-b-.-<-/-p->-
+- - -<-/-t-d->-<-/-t-r->-
+- - -<-t-r->-<-t-d- -s-t-y-l-e-=-"-p-a-d-d-i-n-g-:-2-8-p-x- -4-0-p-x-;-"->-
+- - - - -<-t-a-b-l-e- -w-i-d-t-h-=-"-1-0-0-%-"- -c-e-l-l-p-a-d-d-i-n-g-=-"-0-"- -c-e-l-l-s-p-a-c-i-n-g-=-"-0-"- -s-t-y-l-e-=-"-b-a-c-k-g-r-o-u-n-d-:-#-f-0-f-d-f-4-;-b-o-r-d-e-r---r-a-d-i-u-s-:-1-2-p-x-;-b-o-r-d-e-r-:-1-p-x- -s-o-l-i-d- -#-b-b-f-7-d-0-;-m-a-r-g-i-n---b-o-t-t-o-m-:-2-4-p-x-;-"->-
+- - - - - - -$-{-r-o-w-s-.-m-a-p-(-(-[-l-a-b-e-l-,- -v-a-l-u-e-]-,- -i-)- -=->- -`-
+- - - - - - -<-t-r->-<-t-d- -s-t-y-l-e-=-"-p-a-d-d-i-n-g-:-1-3-p-x- -2-0-p-x-;-$-{-i- -<- -r-o-w-s-.-l-e-n-g-t-h- --- -1- -?- -'-b-o-r-d-e-r---b-o-t-t-o-m-:-1-p-x- -s-o-l-i-d- -#-b-b-f-7-d-0-;-'- -:- -'-'-}-"->-
+- - - - - - - - -<-p- -s-t-y-l-e-=-"-m-a-r-g-i-n-:-0-;-f-o-n-t---s-i-z-e-:-1-0-p-x-;-f-o-n-t---w-e-i-g-h-t-:-7-0-0-;-t-e-x-t---t-r-a-n-s-f-o-r-m-:-u-p-p-e-r-c-a-s-e-;-l-e-t-t-e-r---s-p-a-c-i-n-g-:-1-p-x-;-c-o-l-o-r-:-#-0-5-9-6-6-9-;-"->-$-{-l-a-b-e-l-}-<-/-p->-
+- - - - - - - - -<-p- -s-t-y-l-e-=-"-m-a-r-g-i-n-:-4-p-x- -0- -0-;-f-o-n-t---s-i-z-e-:-1-4-p-x-;-f-o-n-t---w-e-i-g-h-t-:-6-0-0-;-c-o-l-o-r-:-#-1-e-2-9-3-b-;-"->-$-{-v-a-l-u-e-}-<-/-p->-
+- - - - - - -<-/-t-d->-<-/-t-r->-`-)-.-j-o-i-n-(-'-'-)-}-
+- - - - -<-/-t-a-b-l-e->-
+- - -<-/-t-d->-<-/-t-r->-
+-<-/-t-a-b-l-e->-
+-<-/-t-d->-<-/-t-r->-
+-<-/-t-a-b-l-e->-
+-<-/-b-o-d-y->-
+-<-/-h-t-m-l->-`-;-
+-}-
+-
+-f-u-n-c-t-i-o-n- -a-d-m-i-n-A-l-e-r-t-E-m-a-i-l-(-s-u-b-j-e-c-t-:- -s-t-r-i-n-g-,- -b-o-d-y-:- -s-t-r-i-n-g-)-:- -s-t-r-i-n-g- -{-
+- - -r-e-t-u-r-n- -`-<-!-D-O-C-T-Y-P-E- -h-t-m-l->-
+-<-h-t-m-l->-<-h-e-a-d->-<-m-e-t-a- -c-h-a-r-s-e-t-=-"-U-T-F---8-"-/->-<-/-h-e-a-d->-
+-<-b-o-d-y- -s-t-y-l-e-=-"-f-o-n-t---f-a-m-i-l-y-:-m-o-n-o-s-p-a-c-e-;-p-a-d-d-i-n-g-:-2-4-p-x-;-b-a-c-k-g-r-o-u-n-d-:-#-f-f-f-1-f-2-;-"->-
+-<-d-i-v- -s-t-y-l-e-=-"-m-a-x---w-i-d-t-h-:-6-0-0-p-x-;-m-a-r-g-i-n-:-0- -a-u-t-o-;-b-a-c-k-g-r-o-u-n-d-:-#-f-f-f-;-b-o-r-d-e-r-:-2-p-x- -s-o-l-i-d- -#-f-c-a-5-a-5-;-b-o-r-d-e-r---r-a-d-i-u-s-:-1-2-p-x-;-p-a-d-d-i-n-g-:-2-4-p-x-;-"->-
+- - -<-h-2- -s-t-y-l-e-=-"-c-o-l-o-r-:-#-d-c-2-6-2-6-;-m-a-r-g-i-n---t-o-p-:-0-;-"->-F-r-e-s-h-P-r-e-s-s- -A-l-e-r-t-<-/-h-2->-
+- - -<-p- -s-t-y-l-e-=-"-c-o-l-o-r-:-#-1-e-2-9-3-b-;-w-h-i-t-e---s-p-a-c-e-:-p-r-e---w-r-a-p-;-"->-$-{-e-s-c-a-p-e-H-t-m-l-(-b-o-d-y-)-}-<-/-p->-
+- - -<-p- -s-t-y-l-e-=-"-f-o-n-t---s-i-z-e-:-1-2-p-x-;-c-o-l-o-r-:-#-9-4-a-3-b-8-;-"->-S-e-n-t- -b-y- -F-r-e-s-h-P-r-e-s-s- -E-d-g-e- -F-u-n-c-t-i-o-n- -�- -c-r-e-a-t-e---o-r-d-e-r-<-/-p->-
+-<-/-d-i-v->-
+-<-/-b-o-d-y->-<-/-h-t-m-l->-`-;-
+-}-
+-
+-/-/- ----- -M-a-i-n- -h-a-n-d-l-e-r- -----------------------------------------------------------------------------------------------------------------------------
+-D-e-n-o-.-s-e-r-v-e-(-a-s-y-n-c- -(-r-e-q-:- -R-e-q-u-e-s-t-)- -=->- -{-
+- - -i-f- -(-r-e-q-.-m-e-t-h-o-d- -=-=-=- -'-O-P-T-I-O-N-S-'-)- -{-
+- - - - -r-e-t-u-r-n- -n-e-w- -R-e-s-p-o-n-s-e-(-'-o-k-'-,- -{- -h-e-a-d-e-r-s-:- -c-o-r-s-H-e-a-d-e-r-s- -}-)-;-
+- - -}-
+-
+- - -i-f- -(-r-e-q-.-m-e-t-h-o-d- -!-=-=- -'-P-O-S-T-'-)- -{-
+- - - - -r-e-t-u-r-n- -n-e-w- -R-e-s-p-o-n-s-e-(-J-S-O-N-.-s-t-r-i-n-g-i-f-y-(-{- -e-r-r-o-r-:- -'-M-e-t-h-o-d- -n-o-t- -a-l-l-o-w-e-d-'- -}-)-,- -{-
+- - - - - - -s-t-a-t-u-s-:- -4-0-5-,- -h-e-a-d-e-r-s-:- -{- -.-.-.-c-o-r-s-H-e-a-d-e-r-s-,- -'-C-o-n-t-e-n-t---T-y-p-e-'-:- -'-a-p-p-l-i-c-a-t-i-o-n-/-j-s-o-n-'- -}-,-
+- - - - -}-)-;-
+- - -}-
+-
+- - -c-o-n-s-t- -b-r-e-v-o-K-e-y- - - - -=- -D-e-n-o-.-e-n-v-.-g-e-t-(-'-B-R-E-V-O-_-A-P-I-_-K-E-Y-'-)- -?-?- -'-'-;-
+- - -c-o-n-s-t- -b-r-e-v-o-S-e-n-d-e-r- -=- -D-e-n-o-.-e-n-v-.-g-e-t-(-'-B-R-E-V-O-_-S-E-N-D-E-R-_-E-M-A-I-L-'-)- -?-?- -'-'-;-
+- - -c-o-n-s-t- -b-r-e-v-o-L-i-s-t- - - -=- -D-e-n-o-.-e-n-v-.-g-e-t-(-'-B-R-E-V-O-_-L-I-S-T-_-I-D-'-)- -?-?- -'-'-;-
+- - -c-o-n-s-t- -r-e-s-e-n-d-K-e-y- - - -=- -D-e-n-o-.-e-n-v-.-g-e-t-(-'-R-E-S-E-N-D-_-A-P-I-_-K-E-Y-'-)- -?-?- -'-'-;-
+- - -c-o-n-s-t- -s-e-r-v-i-c-e-K-e-y- - -=- -D-e-n-o-.-e-n-v-.-g-e-t-(-'-S-E-R-V-I-C-E-_-R-O-L-E-_-K-E-Y-'-)- -?-?- -'-'-;- -
+- - -c-o-n-s-t- -s-u-p-a-b-a-s-e-U-r-l- -=- -D-e-n-o-.-e-n-v-.-g-e-t-(-'-S-U-P-A-B-A-S-E-_-U-R-L-'-)- -?-?- -'-'-;-
+- - -c-o-n-s-t- -c-a-n-E-m-a-i-l- -=- -!-!-(-b-r-e-v-o-K-e-y- -&-&- -b-r-e-v-o-S-e-n-d-e-r-)-;-
+-
+- - -t-r-y- -{-
+- - - - -c-o-n-s-t- -b-o-d-y-:- -O-r-d-e-r-P-a-y-l-o-a-d- -=- -a-w-a-i-t- -r-e-q-.-j-s-o-n-(-)-;-
+- - - - -c-o-n-s-t- -r-e-q-u-i-r-e-d- -=- -[-'-c-u-s-t-o-m-e-r-_-n-a-m-e-'-,-'-p-h-o-n-e-'-,-'-e-m-a-i-l-'-,-'-a-d-d-r-e-s-s-'-,-'-p-i-c-k-u-p-_-d-a-t-e-'-,-'-p-i-c-k-u-p-_-t-i-m-e-_-s-l-o-t-'-]- -a-s- -c-o-n-s-t-;-
+- - - - -f-o-r- -(-c-o-n-s-t- -f- -o-f- -r-e-q-u-i-r-e-d-)- -{-
+- - - - - - -i-f- -(-!-b-o-d-y-[-f-]-?-.-t-o-S-t-r-i-n-g-(-)-.-t-r-i-m-(-)-)- -{-
+- - - - - - - - -r-e-t-u-r-n- -n-e-w- -R-e-s-p-o-n-s-e-(-J-S-O-N-.-s-t-r-i-n-g-i-f-y-(-{- -s-u-c-c-e-s-s-:- -f-a-l-s-e-,- -m-e-s-s-a-g-e-:- -`-M-i-s-s-i-n-g- -r-e-q-u-i-r-e-d- -f-i-e-l-d-:- -$-{-f-}-`- -}-)-,- -{- -s-t-a-t-u-s-:- -4-0-0-,- -h-e-a-d-e-r-s-:- -{- -.-.-.-c-o-r-s-H-e-a-d-e-r-s-,- -'-C-o-n-t-e-n-t---T-y-p-e-'-:- -'-a-p-p-l-i-c-a-t-i-o-n-/-j-s-o-n-'- -}-}-)-;-
+- - - - - - -}-
+- - - - -}-
+-
+- - - - -c-o-n-s-t- -o-r-d-e-r-I-d- -=- -g-e-n-e-r-a-t-e-O-r-d-e-r-I-d-(-)-;-
+- - - - -c-o-n-s-t- -s-u-p-a-b-a-s-e- -=- -c-r-e-a-t-e-C-l-i-e-n-t-(-s-u-p-a-b-a-s-e-U-r-l-,- -s-e-r-v-i-c-e-K-e-y-)-;-
+-
+- - - - -c-o-n-s-t- -{- -e-r-r-o-r-:- -d-b-E-r-r- -}- -=- -a-w-a-i-t- -s-u-p-a-b-a-s-e-.-f-r-o-m-(-'-o-r-d-e-r-s-'-)-.-i-n-s-e-r-t-(-{-
+- - - - - - -o-r-d-e-r-_-i-d-:- - - - - - - - - - - - - -o-r-d-e-r-I-d-,-
+- - - - - - -c-u-s-t-o-m-e-r-_-n-a-m-e-:- - - - - - - - -b-o-d-y-.-c-u-s-t-o-m-e-r-_-n-a-m-e-.-t-r-i-m-(-)-,-
+- - - - - - -p-h-o-n-e-:- - - - - - - - - - - - - - - - -b-o-d-y-.-p-h-o-n-e-.-t-r-i-m-(-)-,-
+- - - - - - -e-m-a-i-l-:- - - - - - - - - - - - - - - - -b-o-d-y-.-e-m-a-i-l-.-t-r-i-m-(-)-.-t-o-L-o-w-e-r-C-a-s-e-(-)-,-
+- - - - - - -a-d-d-r-e-s-s-:- - - - - - - - - - - - - - -b-o-d-y-.-a-d-d-r-e-s-s-.-t-r-i-m-(-)-,-
+- - - - - - -p-i-c-k-u-p-_-d-a-t-e-:- - - - - - - - - - -b-o-d-y-.-p-i-c-k-u-p-_-d-a-t-e-,-
+- - - - - - -p-i-c-k-u-p-_-t-i-m-e-_-s-l-o-t-:- - - - - -b-o-d-y-.-p-i-c-k-u-p-_-t-i-m-e-_-s-l-o-t-,-
+- - - - - - -s-p-e-c-i-a-l-_-i-n-s-t-r-u-c-t-i-o-n-s-:- -b-o-d-y-.-s-p-e-c-i-a-l-_-i-n-s-t-r-u-c-t-i-o-n-s-?-.-t-r-i-m-(-)- -|-|- -n-u-l-l-,-
+- - - - - - -s-t-a-t-u-s-:- - - - - - - - - - - - - - - -'-p-e-n-d-i-n-g-'-,-
+- - - - - - -p-a-y-m-e-n-t-_-s-t-a-t-u-s-:- - - - - - - -'-u-n-p-a-i-d-'-,-
+- - - - - - -s-o-u-r-c-e-:- - - - - - - - - - - - - - - -[-'-w-e-b-s-i-t-e-'-,-'-p-h-o-n-e-'-,-'-w-h-a-t-s-a-p-p-'-,-'-w-a-l-k-i-n-'-]-.-i-n-c-l-u-d-e-s-(-b-o-d-y-.-s-o-u-r-c-e- -?-?- -'-'-)- -?- -b-o-d-y-.-s-o-u-r-c-e- -:- -'-w-e-b-s-i-t-e-'-,-
+- - - - - - -c-r-e-a-t-e-d-_-a-t-:- - - - - - - - - - - -n-e-w- -D-a-t-e-(-)-.-t-o-I-S-O-S-t-r-i-n-g-(-)-,-
+- - - - -}-)-;-
+-
+- - - - -i-f- -(-d-b-E-r-r-)- -{-
+- - - - - - -c-o-n-s-o-l-e-.-e-r-r-o-r-(-'-[-c-r-e-a-t-e---o-r-d-e-r-]- -D-B- -i-n-s-e-r-t- -f-a-i-l-e-d-:-'-,- -d-b-E-r-r-.-m-e-s-s-a-g-e-)-;-
+- - - - - - -i-f- -(-c-a-n-E-m-a-i-l-)- -{-
+- - - - - - - - -a-w-a-i-t- -s-e-n-d-B-r-e-v-o-E-m-a-i-l-(-{-
+- - - - - - - - - - -a-p-i-K-e-y-:- -b-r-e-v-o-K-e-y-,- -s-e-n-d-e-r-E-m-a-i-l-:- -b-r-e-v-o-S-e-n-d-e-r-,-
+- - - - - - - - - - -t-o-:- -[-{- -e-m-a-i-l-:- -A-D-M-I-N-_-E-M-A-I-L-,- -n-a-m-e-:- -'-F-r-e-s-h-P-r-e-s-s- -A-d-m-i-n-'- -}-]-,-
+- - - - - - - - - - -s-u-b-j-e-c-t-:- -`-[-A-L-E-R-T-]- -O-r-d-e-r- -D-B- -i-n-s-e-r-t- -f-a-i-l-e-d- --- -$-{-o-r-d-e-r-I-d-}-`-,-
+- - - - - - - - - - -h-t-m-l-:- -a-d-m-i-n-A-l-e-r-t-E-m-a-i-l-(-'-D-B- -I-n-s-e-r-t- -F-a-i-l-u-r-e-'-,- -`-O-r-d-e-r- -I-D-:- -$-{-o-r-d-e-r-I-d-}-\-n-E-r-r-o-r-:- -$-{-d-b-E-r-r-.-m-e-s-s-a-g-e-}-`-)-,-
+- - - - - - - - -}-)-.-c-a-t-c-h-(-e- -=->- -c-o-n-s-o-l-e-.-e-r-r-o-r-(-e-)-)-;-
+- - - - - - -}-
+- - - - - - -r-e-t-u-r-n- -n-e-w- -R-e-s-p-o-n-s-e-(-J-S-O-N-.-s-t-r-i-n-g-i-f-y-(-{- -s-u-c-c-e-s-s-:- -f-a-l-s-e-,- -m-e-s-s-a-g-e-:- -'-F-a-i-l-e-d- -t-o- -s-a-v-e- -y-o-u-r- -o-r-d-e-r-.-'- -}-)-,- -{- -s-t-a-t-u-s-:- -5-0-0-,- -h-e-a-d-e-r-s-:- -{- -.-.-.-c-o-r-s-H-e-a-d-e-r-s-,- -'-C-o-n-t-e-n-t---T-y-p-e-'-:- -'-a-p-p-l-i-c-a-t-i-o-n-/-j-s-o-n-'- -}-}-)-;-
+- - - - -}-
+-
+- - - - -l-e-t- -a-s-s-i-g-n-e-d-S-t-a-f-f-:- -S-t-a-f-f-M-e-m-b-e-r- -|- -n-u-l-l- -=- -n-u-l-l-;-
+- - - - -c-o-n-s-t- -{- -d-a-t-a-:- -s-t-a-f-f-R-o-w-s-,- -e-r-r-o-r-:- -s-t-a-f-f-E-r-r- -}- -=- -a-w-a-i-t- -s-u-p-a-b-a-s-e-.-r-p-c-(-'-a-s-s-i-g-n-_-p-i-c-k-u-p-_-s-t-a-f-f-'-)-;-
+-
+- - - - -i-f- -(-s-t-a-f-f-E-r-r-)- -{-
+- - - - - - -c-o-n-s-o-l-e-.-e-r-r-o-r-(-'-[-c-r-e-a-t-e---o-r-d-e-r-]- -S-t-a-f-f- -a-s-s-i-g-n-m-e-n-t- -R-P-C- -e-r-r-o-r-:-'-,- -s-t-a-f-f-E-r-r-.-m-e-s-s-a-g-e-)-;-
+- - - - -}- -e-l-s-e- -i-f- -(-s-t-a-f-f-R-o-w-s- -&-&- -s-t-a-f-f-R-o-w-s-.-l-e-n-g-t-h- ->- -0-)- -{-
+- - - - - - -a-s-s-i-g-n-e-d-S-t-a-f-f- -=- -s-t-a-f-f-R-o-w-s-[-0-]- -a-s- -S-t-a-f-f-M-e-m-b-e-r-;-
+- - - - - - -c-o-n-s-t- -{- -e-r-r-o-r-:- -p-a-t-c-h-E-r-r- -}- -=- -a-w-a-i-t- -s-u-p-a-b-a-s-e-.-f-r-o-m-(-'-o-r-d-e-r-s-'-)-.-u-p-d-a-t-e-(-{- -a-s-s-i-g-n-e-d-_-s-t-a-f-f-_-i-d-:- -a-s-s-i-g-n-e-d-S-t-a-f-f-.-i-d- -}-)-.-e-q-(-'-o-r-d-e-r-_-i-d-'-,- -o-r-d-e-r-I-d-)-;-
+- - - - - - -i-f- -(-p-a-t-c-h-E-r-r-)- -c-o-n-s-o-l-e-.-e-r-r-o-r-(-'-[-c-r-e-a-t-e---o-r-d-e-r-]- -P-a-t-c-h- -s-t-a-f-f- -I-D- -f-a-i-l-e-d-:-'-,- -p-a-t-c-h-E-r-r-.-m-e-s-s-a-g-e-)-;-
+- - - - -}-
+-
+- - - - -c-o-n-s-t- -t-a-s-k-s-:- -P-r-o-m-i-s-e-<-a-n-y->-[-]- -=- -[-]-;-
+-
+- - - - -/-/- -C-u-s-t-o-m-e-r- -E-m-a-i-l-
+- - - - -i-f- -(-c-a-n-E-m-a-i-l-)- -{-
+- - - - - - -t-a-s-k-s-.-p-u-s-h-(-(-a-s-y-n-c- -(-)- -=->- -{-
+- - - - - - - - -l-e-t- -s-e-n-t- -=- -a-w-a-i-t- -s-e-n-d-B-r-e-v-o-E-m-a-i-l-(-{-
+- - - - - - - - - - -a-p-i-K-e-y-:- -b-r-e-v-o-K-e-y-,- -s-e-n-d-e-r-E-m-a-i-l-:- -b-r-e-v-o-S-e-n-d-e-r-,-
+- - - - - - - - - - -t-o-:- -[-{- -e-m-a-i-l-:- -b-o-d-y-.-e-m-a-i-l-,- -n-a-m-e-:- -b-o-d-y-.-c-u-s-t-o-m-e-r-_-n-a-m-e- -}-]-,-
+- - - - - - - - - - -s-u-b-j-e-c-t-:- -`-O-r-d-e-r- -C-o-n-f-i-r-m-e-d- --- -$-{-o-r-d-e-r-I-d-}- -|- -F-r-e-s-h-P-r-e-s-s-`-,-
+- - - - - - - - - - -h-t-m-l-:- -c-u-s-t-o-m-e-r-C-o-n-f-i-r-m-a-t-i-o-n-E-m-a-i-l-(-{-
+- - - - - - - - - - - - -o-r-d-e-r-I-d-,- -c-u-s-t-o-m-e-r-N-a-m-e-:- -b-o-d-y-.-c-u-s-t-o-m-e-r-_-n-a-m-e-,- -p-i-c-k-u-p-D-a-t-e-:- -b-o-d-y-.-p-i-c-k-u-p-_-d-a-t-e-,-
+- - - - - - - - - - - - -t-i-m-e-S-l-o-t-:- -b-o-d-y-.-p-i-c-k-u-p-_-t-i-m-e-_-s-l-o-t-,- -a-d-d-r-e-s-s-:- -b-o-d-y-.-a-d-d-r-e-s-s-,-
+- - - - - - - - - - - - -p-h-o-n-e-:- -b-o-d-y-.-p-h-o-n-e-,- -n-o-t-e-s-:- -b-o-d-y-.-s-p-e-c-i-a-l-_-i-n-s-t-r-u-c-t-i-o-n-s-,-
+- - - - - - - - - - -}-)-,-
+- - - - - - - - -}-)-;-
+- - - - - - - - -i-f- -(-!-s-e-n-t- -&-&- -r-e-s-e-n-d-K-e-y-)- -{-
+- - - - - - - - - - -a-w-a-i-t- -f-e-t-c-h-(-'-h-t-t-p-s-:-/-/-a-p-i-.-r-e-s-e-n-d-.-c-o-m-/-e-m-a-i-l-s-'-,- -{-
+- - - - - - - - - - - - -m-e-t-h-o-d-:- -'-P-O-S-T-'-,-
+- - - - - - - - - - - - -h-e-a-d-e-r-s-:- -{- -'-A-u-t-h-o-r-i-z-a-t-i-o-n-'-:- -`-B-e-a-r-e-r- -$-{-r-e-s-e-n-d-K-e-y-}-`-,- -'-C-o-n-t-e-n-t---T-y-p-e-'-:- -'-a-p-p-l-i-c-a-t-i-o-n-/-j-s-o-n-'- -}-,-
+- - - - - - - - - - - - -b-o-d-y-:- -J-S-O-N-.-s-t-r-i-n-g-i-f-y-(-{-
+- - - - - - - - - - - - - - -f-r-o-m-:- -F-r-e-s-h-P-r-e-s-s- -<->-,- -t-o-:- -[-b-o-d-y-.-e-m-a-i-l-]-,-
+- - - - - - - - - - - - - - -s-u-b-j-e-c-t-:- -`-O-r-d-e-r- -C-o-n-f-i-r-m-e-d- --- -$-{-o-r-d-e-r-I-d-}- -|- -F-r-e-s-h-P-r-e-s-s-`-,- -
+- - - - - - - - - - - - - - -h-t-m-l-:- -c-u-s-t-o-m-e-r-C-o-n-f-i-r-m-a-t-i-o-n-E-m-a-i-l-(-{-
+- - - - - - - - - - - - - - - - -o-r-d-e-r-I-d-,- -c-u-s-t-o-m-e-r-N-a-m-e-:- -b-o-d-y-.-c-u-s-t-o-m-e-r-_-n-a-m-e-,- -p-i-c-k-u-p-D-a-t-e-:- -b-o-d-y-.-p-i-c-k-u-p-_-d-a-t-e-,-
+- - - - - - - - - - - - - - - - -t-i-m-e-S-l-o-t-:- -b-o-d-y-.-p-i-c-k-u-p-_-t-i-m-e-_-s-l-o-t-,- -a-d-d-r-e-s-s-:- -b-o-d-y-.-a-d-d-r-e-s-s-,- -p-h-o-n-e-:- -b-o-d-y-.-p-h-o-n-e-,- -n-o-t-e-s-:- -b-o-d-y-.-s-p-e-c-i-a-l-_-i-n-s-t-r-u-c-t-i-o-n-s-,-
+- - - - - - - - - - - - - - -}-)-,-
+- - - - - - - - - - - - -}-)-,-
+- - - - - - - - - - -}-)-;-
+- - - - - - - - -}-
+- - - - - - -}-)-(-)-.-c-a-t-c-h-(-e- -=->- -c-o-n-s-o-l-e-.-e-r-r-o-r-(-e-)-)-)-;-
+- - - - -}-
+-
+- - - - -/-/- -S-t-a-f-f- -/- -A-d-m-i-n- -E-m-a-i-l-
+- - - - -i-f- -(-c-a-n-E-m-a-i-l-)- -{-
+- - - - - - -i-f- -(-a-s-s-i-g-n-e-d-S-t-a-f-f- -&-&- -a-s-s-i-g-n-e-d-S-t-a-f-f-.-e-m-a-i-l-)- -{-
+- - - - - - - - -t-a-s-k-s-.-p-u-s-h-(-s-e-n-d-B-r-e-v-o-E-m-a-i-l-(-{-
+- - - - - - - - - - -a-p-i-K-e-y-:- -b-r-e-v-o-K-e-y-,- -s-e-n-d-e-r-E-m-a-i-l-:- -b-r-e-v-o-S-e-n-d-e-r-,-
+- - - - - - - - - - -t-o-:- -[-{- -e-m-a-i-l-:- -a-s-s-i-g-n-e-d-S-t-a-f-f-.-e-m-a-i-l-,- -n-a-m-e-:- -a-s-s-i-g-n-e-d-S-t-a-f-f-.-f-u-l-l-_-n-a-m-e- -}-]-,-
+- - - - - - - - - - -s-u-b-j-e-c-t-:- -`-N-e-w- -P-i-c-k-u-p- -A-s-s-i-g-n-e-d- --- -$-{-o-r-d-e-r-I-d-}- -|- -F-r-e-s-h-P-r-e-s-s-`-,-
+- - - - - - - - - - -h-t-m-l-:- -s-t-a-f-f-N-o-t-i-f-i-c-a-t-i-o-n-E-m-a-i-l-(-{-
+- - - - - - - - - - - - -o-r-d-e-r-I-d-,- -s-t-a-f-f-N-a-m-e-:- -a-s-s-i-g-n-e-d-S-t-a-f-f-.-f-u-l-l-_-n-a-m-e-,- -c-u-s-t-o-m-e-r-N-a-m-e-:- -b-o-d-y-.-c-u-s-t-o-m-e-r-_-n-a-m-e-,- -
+- - - - - - - - - - - - -c-u-s-t-o-m-e-r-P-h-o-n-e-:- -b-o-d-y-.-p-h-o-n-e-,- -a-d-d-r-e-s-s-:- -b-o-d-y-.-a-d-d-r-e-s-s-,- -p-i-c-k-u-p-D-a-t-e-:- -b-o-d-y-.-p-i-c-k-u-p-_-d-a-t-e-,- -
+- - - - - - - - - - - - -t-i-m-e-S-l-o-t-:- -b-o-d-y-.-p-i-c-k-u-p-_-t-i-m-e-_-s-l-o-t-,- -n-o-t-e-s-:- -b-o-d-y-.-s-p-e-c-i-a-l-_-i-n-s-t-r-u-c-t-i-o-n-s-,-
+- - - - - - - - - - -}-)-,-
+- - - - - - - - -}-)-.-c-a-t-c-h-(-e- -=->- -c-o-n-s-o-l-e-.-e-r-r-o-r-(-e-)-)-)-;-
+- - - - - - -}- -e-l-s-e- -{-
+- - - - - - - - -t-a-s-k-s-.-p-u-s-h-(-s-e-n-d-B-r-e-v-o-E-m-a-i-l-(-{-
+- - - - - - - - - - -a-p-i-K-e-y-:- -b-r-e-v-o-K-e-y-,- -s-e-n-d-e-r-E-m-a-i-l-:- -b-r-e-v-o-S-e-n-d-e-r-,-
+- - - - - - - - - - -t-o-:- -[-{- -e-m-a-i-l-:- -A-D-M-I-N-_-E-M-A-I-L-,- -n-a-m-e-:- -'-F-r-e-s-h-P-r-e-s-s- -A-d-m-i-n-'- -}-]-,-
+- - - - - - - - - - -s-u-b-j-e-c-t-:- -`-[-A-L-E-R-T-]- -N-o- -s-t-a-f-f- -a-v-a-i-l-a-b-l-e- -f-o-r- -o-r-d-e-r- -$-{-o-r-d-e-r-I-d-}-`-,-
+- - - - - - - - - - -h-t-m-l-:- -a-d-m-i-n-A-l-e-r-t-E-m-a-i-l-(-'-N-o- -P-i-c-k-u-p- -S-t-a-f-f- -A-v-a-i-l-a-b-l-e-'-,- -`-O-r-d-e-r- -I-D-:- -$-{-o-r-d-e-r-I-d-}-\-n-P-l-e-a-s-e- -a-s-s-i-g-n- -a- -s-t-a-f-f- -m-e-m-b-e-r- -m-a-n-u-a-l-l-y-.-`-)-,-
+- - - - - - - - -}-)-.-c-a-t-c-h-(-e- -=->- -c-o-n-s-o-l-e-.-e-r-r-o-r-(-e-)-)-)-;-
+- - - - - - -}-
+- - - - -}-
+-
+- - - - -/-/- -C-R-M- -U-p-s-e-r-t-
+- - - - -i-f- -(-b-r-e-v-o-K-e-y- -&-&- -b-r-e-v-o-L-i-s-t-)- -{-
+- - - - - - -t-a-s-k-s-.-p-u-s-h-(-f-e-t-c-h-(-'-h-t-t-p-s-:-/-/-a-p-i-.-b-r-e-v-o-.-c-o-m-/-v-3-/-c-o-n-t-a-c-t-s-'-,- -{-
+- - - - - - - - -m-e-t-h-o-d-:- -'-P-O-S-T-'-,-
+- - - - - - - - -h-e-a-d-e-r-s-:- -{- -'-a-p-i---k-e-y-'-:- -b-r-e-v-o-K-e-y-,- -'-C-o-n-t-e-n-t---T-y-p-e-'-:- -'-a-p-p-l-i-c-a-t-i-o-n-/-j-s-o-n-'- -}-,-
+- - - - - - - - -b-o-d-y-:- -J-S-O-N-.-s-t-r-i-n-g-i-f-y-(-{-
+- - - - - - - - - - -e-m-a-i-l-:- -b-o-d-y-.-e-m-a-i-l-,- -u-p-d-a-t-e-E-n-a-b-l-e-d-:- -t-r-u-e-,-
+- - - - - - - - - - -a-t-t-r-i-b-u-t-e-s-:- -{- -F-I-R-S-T-N-A-M-E-:- -b-o-d-y-.-c-u-s-t-o-m-e-r-_-n-a-m-e-.-s-p-l-i-t-(-'- -'-)-[-0-]-,- -L-A-S-T-N-A-M-E-:- -b-o-d-y-.-c-u-s-t-o-m-e-r-_-n-a-m-e-.-s-p-l-i-t-(-'- -'-)-.-s-l-i-c-e-(-1-)-.-j-o-i-n-(-'- -'-)- -|-|- -'-'-,- -S-M-S-:- -b-o-d-y-.-p-h-o-n-e-,- -S-O-U-R-C-E-:- -'-F-r-e-s-h-P-r-e-s-s- -O-r-d-e-r- -F-o-r-m-'- -}-,-
+- - - - - - - - - - -l-i-s-t-I-d-s-:- -[-p-a-r-s-e-I-n-t-(-b-r-e-v-o-L-i-s-t-,- -1-0-)-]-
+- - - - - - - - -}-)-
+- - - - - - -}-)-.-c-a-t-c-h-(-e- -=->- -c-o-n-s-o-l-e-.-e-r-r-o-r-(-e-)-)-)-;-
+- - - - -}-
+-
+- - - - -a-w-a-i-t- -P-r-o-m-i-s-e-.-a-l-l-S-e-t-t-l-e-d-(-t-a-s-k-s-)-;-
+-
+- - - - -r-e-t-u-r-n- -n-e-w- -R-e-s-p-o-n-s-e-(-J-S-O-N-.-s-t-r-i-n-g-i-f-y-(-{-
+- - - - - - -s-u-c-c-e-s-s-:- -t-r-u-e-,- -o-r-d-e-r-I-d-,- -c-u-s-t-o-m-e-r-N-a-m-e-:- -b-o-d-y-.-c-u-s-t-o-m-e-r-_-n-a-m-e-,- -p-i-c-k-u-p-D-a-t-e-:- -b-o-d-y-.-p-i-c-k-u-p-_-d-a-t-e-,-
+- - - - - - -t-i-m-e-S-l-o-t-:- -S-L-O-T-S-[-b-o-d-y-.-p-i-c-k-u-p-_-t-i-m-e-_-s-l-o-t-]- -|-|- -b-o-d-y-.-p-i-c-k-u-p-_-t-i-m-e-_-s-l-o-t-,-
+- - - - - - -a-s-s-i-g-n-e-d-S-t-a-f-f-:- -a-s-s-i-g-n-e-d-S-t-a-f-f-?-.-f-u-l-l-_-n-a-m-e- -?-?- -n-u-l-l-,- -m-e-s-s-a-g-e-:- -'-O-r-d-e-r- -c-o-n-f-i-r-m-e-d-.-'-
+- - - - -}-)-,- -{- -s-t-a-t-u-s-:- -2-0-0-,- -h-e-a-d-e-r-s-:- -{- -.-.-.-c-o-r-s-H-e-a-d-e-r-s-,- -'-C-o-n-t-e-n-t---T-y-p-e-'-:- -'-a-p-p-l-i-c-a-t-i-o-n-/-j-s-o-n-'- -}- -}-)-;-
+-
+- - -}- -c-a-t-c-h- -(-e-r-r-)- -{-
+- - - - -c-o-n-s-o-l-e-.-e-r-r-o-r-(-'-[-c-r-e-a-t-e---o-r-d-e-r-]- -U-n-h-a-n-d-l-e-d- -e-r-r-o-r-:-'-,- -e-r-r-)-;-
+- - - - -r-e-t-u-r-n- -n-e-w- -R-e-s-p-o-n-s-e-(-J-S-O-N-.-s-t-r-i-n-g-i-f-y-(-{- -s-u-c-c-e-s-s-:- -f-a-l-s-e-,- -m-e-s-s-a-g-e-:- -'-A-n- -u-n-e-x-p-e-c-t-e-d- -e-r-r-o-r- -o-c-c-u-r-r-e-d-.-'- -}-)-,- -{- -s-t-a-t-u-s-:- -5-0-0-,- -h-e-a-d-e-r-s-:- -{- -.-.-.-c-o-r-s-H-e-a-d-e-r-s-,- -'-C-o-n-t-e-n-t---T-y-p-e-'-:- -'-a-p-p-l-i-c-a-t-i-o-n-/-j-s-o-n-'- -}-}-)-;-
+- - -}-
+-}-)-;-
+-
