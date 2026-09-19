@@ -450,7 +450,8 @@ You are Pressy, FreshPress Laundry's helpful AI assistant. Read the user's messa
   "confidence": 0.0,
   "suggested_actions": [],
   "requires_human": false,
-  "create_order_payload": null
+  "create_order_payload": null,
+  "session_summary": "A brief 1-sentence summary of the conversation so far"
 }
 *NOTE on create_order_payload*: ONLY include an object here with { "customer_name":"", "phone":"", "email":"", "address":"", "pickup_date":"", "pickup_time_slot":"morning|afternoon|evening" } if you have collected ALL 6 details. Otherwise, keep it null.
 
@@ -541,7 +542,8 @@ Now respond.`;
         messages_count:   messageCount + 2,
         last_intent:      topic,
         requires_human:   requiresHuman,
-        order_id:         parsed.created_order_id || mentionedOrderId || null
+        order_id:         parsed.created_order_id || mentionedOrderId || null,
+        ai_summary:       parsed.session_summary || null
       }),
     }).catch(e => console.warn('[chat-assistant] session upsert failed:', e));
 
