@@ -453,7 +453,7 @@ You are Pressy, FreshPress Laundry's helpful AI assistant. Read the user's messa
   "create_order_payload": null,
   "session_summary": "A brief 1-sentence summary of the conversation so far"
 }
-*NOTE on create_order_payload*: ONLY include an object here with { "customer_name":"", "phone":"", "email":"", "address":"", "pickup_date":"", "pickup_time_slot":"morning|afternoon|evening" } if you have collected ALL 6 details. Otherwise, keep it null.
+*NOTE on create_order_payload*: ONLY include an object here with { "customer_name":"", "phone":"", "email":"", "address":"", "pickup_date":"", "pickup_time_slot":"morning|afternoon|evening", "special_instructions":"" } if you have collected ALL 6 details. "special_instructions" is OPTIONAL and should capture things like 'use cold water' or 'fragile'. Otherwise, keep it null.
 
 Now respond.`;
 
