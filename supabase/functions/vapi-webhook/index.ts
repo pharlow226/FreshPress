@@ -101,22 +101,28 @@ async function createPickupOrder(args: any) {
     return "Missing required fields. Need name, phone, email, address, date, and time slot.";
   }
 
-  let validTimeSlot = 'morning';
+    let validTimeSlot = 'morning';
   const slotLower = (pickup_time_slot || '').toLowerCase();
-  if (slotLower.includes('afternoon') || slotLower.includes('12pm')) validTimeSlot = 'afternoon';
-  else if (slotLower.includes('evening') || slotLower.includes('3pm')) validTimeSlot = 'evening';
+  
+  // Smarter slot mapping handling times
+  if (slotLower.includes('afternoon') || slotLower.match(/12pm|1pm|2pm|3pm|12:00|13:00|14:00|15:00/)) {
+    validTimeSlot = 'afternoon';
+  } else if (slotLower.includes('evening') || slotLower.match(/4pm|5pm|6pm|7pm|16:00|17:00|18:00|19:00/)) {
+    validTimeSlot = 'evening';
+  }
 
   const res = await fetch(`${SUPABASE_URL}/functions/v1/create-order`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
+        body: JSON.stringify({
       customer_name,
       email: email.toLowerCase().replace(/\s/g, ''),
       phone,
       address,
       pickup_date,
       pickup_time_slot: validTimeSlot,
-      special_instructions: "Created via Voice AI"
+      special_instructions: "Created via Voice AI",
+      source: 'phone'
     })
   });
 
@@ -301,5 +307,6 @@ Deno.serve(async (req: Request) => {
     return Response.json({ error: err.message }, { status: 500, headers: CORS });
   }
 });
+
 
 
