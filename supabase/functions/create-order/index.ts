@@ -132,7 +132,7 @@ function customerConfirmationEmail(p: {
     <p style="margin:6px 0 0;font-size:12px;color:#94a3b8;">Track at: fresh-press-chi.vercel.app/track</p>
   </td></tr>
   <tr><td style="padding:32px 40px;">
-    <p style="margin:0 0 20px;font-size:15px;color:#1e293b;">Hi <strong>${p.customerName}</strong>,</p>
+    <p style="margin:0 0 20px;font-size:15px;color:#1e293b;">Hi <strong>\</strong>,</p>
     <p style="margin:0 0 24px;font-size:14px;color:#475569;line-height:1.7;">Your pickup has been confirmed. Our courier will arrive at your address during the window below.</p>
     <table width="100%" cellpadding="0" cellspacing="0" style="background:#f8faff;border-radius:12px;border:1px solid #e0e7ff;margin-bottom:24px;">
       ${rows.map(([label, value], i) => `
@@ -272,7 +272,8 @@ Deno.serve(async (req: Request) => {
       pickup_time_slot:     body.pickup_time_slot,
       special_instructions: body.special_instructions?.trim() || null,
       status:               'pending',
-      payment_status:       'unpaid',
+      payment_status: 'unpaid',
+      source: 'phone',
       created_at:           new Date().toISOString(),
     });
 
@@ -299,15 +300,7 @@ Deno.serve(async (req: Request) => {
 
     console.log(`[create-order] Order ${orderId} inserted`);
 
-function escapeHtml(str: string) {
-  return str.replace(/[&<>'"]/g, 
-    tag => ({
-      '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;'
-    }[tag] || tag)
-  );
-}
 
-// ... existing customerConfirmationEmail and staffNotificationEmail functions ...
 
 // ── 5. Atomic Round-robin staff assignment ───────────────────────────
     let assignedStaff: StaffMember | null = null;
@@ -321,10 +314,8 @@ function escapeHtml(str: string) {
       assignedStaff = staffRows[0] as StaffMember;
       
       // Patch order with assigned staff (Staff table is already locked and updated by RPC)
-      await supabase
-        .from('orders')
-        .update({ assigned_staff_id: assignedStaff.id })
-        .eq('order_id', orderId);
+      const { error: patchErr } = await supabase.from('orders').update({ assigned_staff_id: assignedStaff.id }).eq('order_id', orderId);
+      if (patchErr) console.error('[create-order] Failed to patch order with staff ID:', patchErr.message);
 
       console.log(`[create-order] Assigned to staff: ${assignedStaff.full_name} (${assignedStaff.id})`);
     } else {
@@ -456,3 +447,4 @@ function escapeHtml(str: string) {
     });
   }
 });
+
