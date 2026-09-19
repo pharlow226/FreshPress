@@ -43,6 +43,7 @@ interface OrderPayload {
   pickup_date: string;
   pickup_time_slot: 'morning' | 'afternoon' | 'evening';
   special_instructions?: string;
+  source?: string;
 }
 
 interface StaffMember {
@@ -272,7 +273,8 @@ Deno.serve(async (req: Request) => {
       pickup_time_slot:     body.pickup_time_slot,
       special_instructions: body.special_instructions?.trim() || null,
       status:               'pending',
-      payment_status: 'unpaid',
+      payment_status:       'unpaid',
+      source:               body.source || 'website',
       source: 'phone',
       created_at:           new Date().toISOString(),
     });
@@ -447,4 +449,5 @@ Deno.serve(async (req: Request) => {
     });
   }
 });
+
 
