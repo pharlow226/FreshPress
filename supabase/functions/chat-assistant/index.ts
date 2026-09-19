@@ -16,7 +16,7 @@ const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
 const SERVICE_KEY  = Deno.env.get('SERVICE_ROLE_KEY')
                   ?? Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
 
-const OPENAI_KEY   = Deno.env.get('OPENAI_API_KEY')!;
+const OPENAI_KEY   = Deno.env.get('OPENROUTER_API_KEY') ?? Deno.env.get('OPENAI_API_KEY')!;
 const BREVO_KEY    = Deno.env.get('BREVO_API_KEY')      ?? '';
 const BREVO_SENDER = Deno.env.get('BREVO_SENDER_EMAIL') ?? 'noreply@freshpress.ng';
 const ADMIN_EMAIL  = Deno.env.get('ADMIN_EMAIL')        ?? 'faloyesamuel400@gmail.com';
@@ -456,14 +456,16 @@ You are Pressy, FreshPress Laundry's helpful AI assistant. Read the user's messa
 
 Now respond.`;
 
-    const openaiRes = await fetch('https://api.openai.com/v1/chat/completions', {
+    const openaiRes = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method:  'POST',
       headers: {
         'Content-Type':  'application/json',
         'Authorization': `Bearer ${OPENAI_KEY}`,
+        'HTTP-Referer': SITE_URL,
+        'X-Title': 'FreshPress Chatbot',
       },
       body: JSON.stringify({
-        model:      'gpt-4o-mini',
+        model:      'openai/gpt-4o-mini',
         max_tokens: 1024,
         messages: [
           { role: 'system', content: getSystemPrompt(Array.isArray(companyRows) ? companyRows[0] : companyRows) },
