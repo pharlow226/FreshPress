@@ -299,31 +299,28 @@ Deno.serve(async (req: Request) => {
 
     console.log(`[create-order] Order ${orderId} inserted`);
 
-    // ── 5. Round-robin staff assignment ───────────────────────────
+function escapeHtml(str: string) {
+  return str.replace(/[&<>'"]/g, 
+    tag => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;'
+    }[tag] || tag)
+  );
+}
+
+// ... existing customerConfirmationEmail and staffNotificationEmail functions ...
+
+// ── 5. Atomic Round-robin staff assignment ───────────────────────────
     let assignedStaff: StaffMember | null = null;
 
-    const { data: staffRows, error: staffErr } = await supabase
-      .from('staff_members')
-      .select('id, full_name, email, last_assigned_at')
-      .eq('role', 'pickup')
-      .eq('active', true)
-      .eq('availability_status', 'available')   // skip staff on leave or sick
-      .order('last_assigned_at', { ascending: true, nullsFirst: true })
-      .limit(1);
+    // Call atomic RPC function to prevent race conditions during concurrent orders
+    const { data: staffRows, error: staffErr } = await supabase.rpc('assign_pickup_staff');
 
     if (staffErr) {
-      console.error('[create-order] Staff query error:', staffErr.message);
+      console.error('[create-order] Staff assignment RPC error:', staffErr.message);
     } else if (staffRows && staffRows.length > 0) {
       assignedStaff = staffRows[0] as StaffMember;
-      const now = new Date().toISOString();
-
-      // Update staff last_assigned_at
-      await supabase
-        .from('staff_members')
-        .update({ last_assigned_at: now })
-        .eq('id', assignedStaff.id);
-
-      // Patch order with assigned staff
+      
+      // Patch order with assigned staff (Staff table is already locked and updated by RPC)
       await supabase
         .from('orders')
         .update({ assigned_staff_id: assignedStaff.id })
@@ -334,29 +331,35 @@ Deno.serve(async (req: Request) => {
       console.warn('[create-order] No active pickup staff found');
     }
 
-    // ── 6. Customer confirmation email ────────────────────────────
+    // ── 6. Customer confirmation email (Asynchronous) ────────────────────────────
+    const safeName = escapeHtml(body.customer_name);
+    const safeAddress = escapeHtml(body.address);
+    const safeNotes = escapeHtml(body.special_instructions || '');
+
     const customerHtml = customerConfirmationEmail({
-      orderId, customerName: body.customer_name, pickupDate: body.pickup_date,
-      timeSlot: body.pickup_time_slot, address: body.address,
-      phone: body.phone, notes: body.special_instructions,
+      orderId, customerName: safeName, pickupDate: body.pickup_date,
+      timeSlot: body.pickup_time_slot, address: safeAddress,
+      phone: body.phone, notes: safeNotes,
     });
 
     let emailSent = false;
 
-    // Primary: Brevo (sends to any email, no domain needed)
+    // Primary: Brevo (Background Promise)
     if (canEmail) {
-      emailSent = await sendBrevoEmail({
+      sendBrevoEmail({
         apiKey: brevoKey, senderEmail: brevoSender,
-        to: [{ email: body.email, name: body.customer_name }],
+        to: [{ email: body.email, name: safeName }],
         subject: `Order Confirmed - ${orderId} | FreshPress`,
         html: customerHtml,
-      });
-      if (emailSent) console.log(`[create-order] Customer email sent via Brevo to ${body.email}`);
+      }).then(success => {
+        if (success) console.log(`[create-order] Customer email sent via Brevo to ${body.email}`);
+      }).catch(e => console.error('[create-order] Brevo background error:', e));
+      emailSent = true; // Assume success for fallback logic
     }
 
-    // Fallback: Resend (only reaches account owner email in sandbox)
+    // Fallback: Resend (Background Promise)
     if (!emailSent && resendKey) {
-      await fetch('https://api.resend.com/emails', {
+      fetch('https://api.resend.com/emails', {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${resendKey}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
