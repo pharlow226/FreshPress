@@ -31,7 +31,7 @@ const OrderTrackingPage = () => {
     setLoading(true); setError(''); setOrder(null); setCompany(null);
     try {
       const [{ data, error: dbError }, { data: companyRows }] = await Promise.all([
-        supabase.from('orders').select('*').eq('order_id', orderId.trim().toUpperCase()).single(),
+        supabase.rpc('track_order', { p_order_id: orderId.trim().toUpperCase() }).single(),
         supabase.from('company_info').select('account_name,account_number,bank_name,company_whatsapp').limit(1),
       ]);
       if (dbError || !data) { setError('Order not found. Please check your Order ID.'); return; }
