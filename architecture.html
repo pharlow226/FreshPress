@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FreshPress Architecture Diagram</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f8f9fa;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 40px 20px;
+        }
+        .container {
+            background-color: white;
+            padding: 40px;
+            border-radius: 12px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+            max-width: 1200px;
+            width: 100%;
+        }
+        h1 {
+            text-align: center;
+            color: #1a1a1a;
+            margin-bottom: 30px;
+        }
+        .mermaid {
+            display: flex;
+            justify-content: center;
+        }
+        .instructions {
+            margin-top: 40px;
+            padding-top: 20px;
+            border-top: 1px solid #eee;
+            text-align: center;
+            color: #666;
+        }
+    </style>
+    <!-- Load Mermaid.js from CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+    <script>
+        mermaid.initialize({ startOnLoad: true, theme: 'default' });
+    </script>
+</head>
+<body>
+
+    <div class="container">
+        <h1>FreshPress AI Voice Architecture</h1>
+        
+        <div class="mermaid">
+graph TD
+    %% Styling Definitions
+    classDef client fill:#ffffff,stroke:#333,stroke-width:2px,shape:circle;
+    classDef layerBox fill:#ffffff,stroke:#333,stroke-width:1px,stroke-dasharray: 5 5;
+    classDef comp fill:#ffffff,stroke:#00a8ff,stroke-width:2px;
+    classDef pinkComp fill:#ffffff,stroke:#d63031,stroke-width:2px;
+    classDef purpleComp fill:#ffffff,stroke:#8e44ad,stroke-width:2px;
+    classDef greenComp fill:#ffffff,stroke:#2ecc71,stroke-width:2px;
+    classDef orangeComp fill:#ffffff,stroke:#e67e22,stroke-width:2px;
+
+    %% -------------------------------------------------------------
+    %% CLIENT & CONVERSATION LAYER
+    %% -------------------------------------------------------------
+    Customer(("Customer<br/>Phone Call / Web SDK")):::client
+    
+    subgraph ConversationLayer ["Conversation Layer (Communication / Core Engine)"]
+        Vapi["Vapi Orchestrator"]:::comp
+        DeepgramTTS["Deepgram Aura TTS<br/>Text-to-Speech"]:::comp
+        DeepgramSTT["Deepgram STT<br/>Speech-to-Text"]:::comp
+        LLM["GPT-4o-Mini<br/>Decision Engine"]:::comp
+    end
+    style ConversationLayer fill:#ffffff,stroke:#333,stroke-width:1px
+
+    Customer -->|Voice Stream| Vapi
+    Vapi <--> DeepgramTTS
+    Vapi <--> DeepgramSTT
+    Vapi <--> LLM
+
+    %% -------------------------------------------------------------
+    %% INTEGRATION & MIDDLEWARE LAYER
+    %% -------------------------------------------------------------
+    subgraph IntegrationLayer ["Integration Layer (Middleware & Tools)"]
+        EdgeFunc["Supabase Edge Function<br/>vapi-webhook"]:::pinkComp
+        JWTValidation["JWT / API Key<br/>Validation"]:::purpleComp
+        ToolDispatcher["Tool Dispatcher<br/>get_pricing, create_order"]:::purpleComp
+        AudioProxy["Audio Proxy<br/>Download & Upload"]:::pinkComp
+    end
+    style IntegrationLayer fill:#ffffff,stroke:#333,stroke-width:1px
+
+    LLM -->|REST/Tool Call| EdgeFunc
+    EdgeFunc --> JWTValidation
+    JWTValidation --> ToolDispatcher
+    EdgeFunc --> AudioProxy
+
+    %% -------------------------------------------------------------
+    %% BUSINESS & DATA LAYER
+    %% -------------------------------------------------------------
+    subgraph BusinessLayer ["Business Layer (Business & Operational System of Record)"]
+        SupabaseDB[("Supabase PostgreSQL")]:::greenComp
+        PricingTable["Pricing & Company Info<br/>Dynamic Tools"]:::greenComp
+        OrdersTable["Orders Table<br/>New Orders"]:::greenComp
+        CustomersTable["Customers Table<br/>State Machine"]:::greenComp
+    end
+    style BusinessLayer fill:#ffffff,stroke:#333,stroke-width:1px
+
+    ToolDispatcher -->|Secure Database Queries| SupabaseDB
+    SupabaseDB --> PricingTable
+    SupabaseDB --> OrdersTable
+    SupabaseDB --> CustomersTable
+
+    %% -------------------------------------------------------------
+    %% OBSERVABILITY & DASHBOARD LAYER
+    %% -------------------------------------------------------------
+    subgraph ObservabilityLayer ["Observability Layer (Observability & Analytics Layer)"]
+        SupaStorage[("Supabase Storage<br/>Public Recordings")]:::orangeComp
+        VapiLogs["vapi_call_logs<br/>Telemetry & Transcripts"]:::orangeComp
+        ReactDash["React / Vercel<br/>Admin Dashboard"]:::orangeComp
+    end
+    style ObservabilityLayer fill:#ffffff,stroke:#333,stroke-width:1px
+
+    AudioProxy -->|Save Call Content| SupaStorage
+    Vapi -->|End-of-Call Payload| VapiLogs
+    SupaStorage --> ReactDash
+    VapiLogs --> ReactDash
+    SupabaseDB -.->|Realtime Sync| ReactDash
+        </div>
+
+        <div class="instructions">
+            <p>💡 <b>Pro Tip:</b> Right-click on the diagram above and select <b>"Copy Image"</b> or <b>"Save Image As..."</b> to use it in your presentation.</p>
+        </div>
+    </div>
+
+</body>
+</html>

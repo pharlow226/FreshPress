@@ -1,0 +1,60 @@
+flowchart TD
+    classDef user fill:#f9f9f9,stroke:#333,stroke-width:2px;
+    classDef conv fill:#e3f2fd,stroke:#1e88e5,stroke-width:2px;
+    classDef integ fill:#f3e5f5,stroke:#8e24aa,stroke-width:2px;
+    classDef bus fill:#e8f5e9,stroke:#43a047,stroke-width:2px;
+    classDef obs fill:#fff3e0,stroke:#fb8c00,stroke-width:2px;
+
+    Customer((Customer\nPhone Call / Web SDK)):::user
+
+    subgraph Conversation Layer ["Conversation Layer (Vapi & LLMs)"]
+        direction TB
+        Vapi[Vapi Orchestrator]:::conv
+        STT[Deepgram STT\nSpeech-to-Text]:::conv
+        LLM[GPT-4o Mini\nDecision Engine]:::conv
+        TTS[Deepgram Aura TTS\nText-to-Speech]:::conv
+
+        Vapi <--> STT
+        Vapi <--> LLM
+        Vapi <--> TTS
+    end
+
+    subgraph Integration Layer ["Integration Layer (Middleware & Tools)"]
+        direction TB
+        Webhook[Supabase Edge Function\nvapi-webhook]:::integ
+        Auth{JWT / API Key\nValidation}:::integ
+        Tools[Tool Dispatcher\nget_pricing, create_order]:::integ
+        AudioProxy[Audio Proxy\nDownload & Upload]:::integ
+
+        Webhook --> Auth
+        Auth --> Tools
+        Webhook --> AudioProxy
+    end
+
+    subgraph Business Layer ["Business & Operational Layer (Source of Truth)"]
+        direction TB
+        DB[(Supabase PostgreSQL)]:::bus
+        Orders[Orders Table\nTransactions]:::bus
+        Customers[Customers Table\nState Machine]:::bus
+        Pricing[Pricing & Company Info\nDynamic Truth]:::bus
+
+        DB --- Orders
+        DB --- Customers
+        DB --- Pricing
+    end
+
+    subgraph Observability Layer ["Observability & Analytics Layer"]
+        direction TB
+        Storage[(Supabase Storage\nPublic Recordings)]:::obs
+        CallLogs[vapi_call_logs\nTelemetry & Transcripts]:::obs
+        Dashboard[React / Vercel\nAdmin Dashboard]:::obs
+
+        CallLogs --> Dashboard
+        Storage --> Dashboard
+    end
+
+    Customer <-->|Voice Stream| Vapi
+    LLM -.->|JSON Tool Calls| Webhook
+    Tools <-->|Query & Upsert| DB
+    AudioProxy -->|Save .wav| Storage
+    Webhook -->|End-of-Call Payload| CallLogs
