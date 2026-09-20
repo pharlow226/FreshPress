@@ -260,7 +260,7 @@ const ChatWidget = () => {
 
           {!isMinimized && (
             <>
-              <div id="freshpress-chat-history" tabIndex={0} className="flex-1 overflow-y-auto overflow-x-hidden p-4 bg-background focus:outline-none">
+              <div id="freshpress-chat-history" tabIndex={0} className="flex-1 overflow-y-auto overflow-x-hidden p-4 bg-background focus:outline-none select-text cursor-text">
                 {isLoadingHistory ? (
                   <div className="flex items-center justify-center h-full">
                     <div className="text-center">
