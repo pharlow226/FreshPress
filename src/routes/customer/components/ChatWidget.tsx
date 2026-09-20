@@ -183,7 +183,7 @@ const ChatWidget = () => {
       <div className={`flex ${isUser ? "justify-end" : "justify-start"} mb-3`}>
         {!isUser && <div className="mr-2 mt-1"><PressyAvatar size="sm" /></div>}
         <div className={`max-w-[80%] flex flex-col ${isUser ? "items-end" : "items-start"}`}>
-          <div className={`px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap break-words [overflow-wrap:anywhere] ${isUser ? "bg-gradient-to-br from-[hsl(var(--brand-gradient-via))] to-[hsl(var(--brand-gradient-to))] text-white font-medium rounded-2xl rounded-br-sm" : "bg-secondary text-foreground rounded-2xl rounded-bl-sm"}`}>
+          <div className={`px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap break-words [overflow-wrap:anywhere] select-text selection:bg-white/30 ${isUser ? "bg-gradient-to-br from-[hsl(var(--brand-gradient-via))] to-[hsl(var(--brand-gradient-to))] text-white font-medium rounded-2xl rounded-br-sm" : "bg-secondary text-foreground rounded-2xl rounded-bl-sm"}`}>
             {normalizeNewlines(message.content)}
           </div>
           {!isUser && message.suggested_actions && message.suggested_actions.length > 0 && (
