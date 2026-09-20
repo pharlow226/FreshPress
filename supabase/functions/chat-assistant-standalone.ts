@@ -374,10 +374,11 @@ Deno.serve(async (req: Request) => {
     // ── Step 2 — Load chat history ──────────────────────────────────────────
     let chatHistory: any[] = [];
     let previousSummary = "";
+    let existingOrderId: string | null = null;
     try {
       const [histRes, sessionRes] = await Promise.all([
         fetch(`${SUPABASE_URL}/rest/v1/chat_messages?session_id=eq.${encodeURIComponent(sessionId)}&select=role,content,created_at&order=created_at.desc&limit=10`, { headers: dbH() }),
-        fetch(`${SUPABASE_URL}/rest/v1/chat_sessions?session_id=eq.${encodeURIComponent(sessionId)}&select=ai_summary&limit=1`, { headers: dbH() })
+        fetch(`${SUPABASE_URL}/rest/v1/chat_sessions?session_id=eq.${encodeURIComponent(sessionId)}&select=ai_summary,order_id&limit=1`, { headers: dbH() })
       ]);
       if (histRes.ok) {
         const rows: any[] = await histRes.json();
@@ -385,7 +386,10 @@ Deno.serve(async (req: Request) => {
       }
       if (sessionRes.ok) {
         const sRows: any[] = await sessionRes.json();
-        if (sRows.length > 0 && sRows[0].ai_summary) previousSummary = sRows[0].ai_summary;
+        if (sRows.length > 0) {
+          if (sRows[0].ai_summary) previousSummary = sRows[0].ai_summary;
+          if (sRows[0].order_id) existingOrderId = sRows[0].order_id;
+        }
       }
     } catch (e) { console.warn('[chat-assistant] history fetch failed:', e); }
 
@@ -564,7 +568,7 @@ Now respond.`;
         messages_count:   messageCount + 2,
         last_intent:      topic,
         requires_human:   requiresHuman,
-        order_id:         parsed.created_order_id || mentionedOrderId || null,
+        order_id:         parsed.created_order_id || mentionedOrderId || existingOrderId || null,
         ai_summary:       parsed.session_summary || null
       }),
     }).catch(e => console.warn('[chat-assistant] session upsert failed:', e));
