@@ -56,6 +56,8 @@ async function getCompanyInfo(args: any) {
   
   const c = rows[0];
   let info = `FreshPress Laundry Information:\n`;
+  const lagosTime = new Date().toLocaleString("en-NG", { timeZone: "Africa/Lagos", dateStyle: "full", timeStyle: "short" });
+  info += `- Current Live Date & Time: ${lagosTime}\n`;
   if (c.minimum_order) info += `- Minimum Order: ${c.minimum_order} Naira\n`;
   if (c.company_address) info += `- Address: ${c.company_address}\n`;
   if (c.company_phone) info += `- Phone/WhatsApp: ${c.company_phone}\n`;
