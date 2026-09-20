@@ -251,7 +251,7 @@ const ChatWidget = () => {
               </div>
             </div>
             <div className="flex items-center gap-1">
-              <button onClick={() => setShowClearConfirm(true)} className="text-white/70 hover:text-white transition-colors p-1.5 rounded-md hover:bg-white/10" title="Clear history" aria-label="Clear history"><Trash2, Copy, Check className="w-4 h-4" /></button>
+              <button onClick={() => setShowClearConfirm(true)} className="text-white/70 hover:text-white transition-colors p-1.5 rounded-md hover:bg-white/10" title="Clear history" aria-label="Clear history"><Trash2 className="w-4 h-4" /></button>
               <button onClick={() => setIsMinimized(prev => !prev)} className="text-white/70 hover:text-white transition-colors p-1.5 rounded-md hover:bg-white/10" aria-label={isMinimized ? "Expand chat" : "Minimize chat"}>
                 {isMinimized ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
               </button>
@@ -312,7 +312,7 @@ const ChatWidget = () => {
           {showClearConfirm && (
             <div className="absolute inset-0 z-10 flex items-center justify-center p-4 bg-foreground/40 backdrop-blur-sm">
               <div className="w-full max-w-[280px] rounded-2xl bg-card border border-border shadow-2xl p-5 text-center">
-                <div className="w-11 h-11 rounded-full mx-auto mb-3 flex items-center justify-center bg-destructive/10"><Trash2, Copy, Check className="w-5 h-5 text-destructive" /></div>
+                <div className="w-11 h-11 rounded-full mx-auto mb-3 flex items-center justify-center bg-destructive/10"><Trash2 className="w-5 h-5 text-destructive" /></div>
                 <h3 className="text-sm font-bold text-foreground mb-1">Clear chat history?</h3>
                 <p className="text-xs text-muted-foreground mb-4 leading-relaxed">This will start a new conversation with Pressy. Your previous messages will be removed from this device.</p>
                 <div className="flex gap-2">
