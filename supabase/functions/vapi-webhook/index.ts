@@ -145,7 +145,7 @@ async function logEndOfCallReport(message: any) {
 
   const phone = message.call?.customer?.number || message.call?.phoneCallProviderDetails?.from || null;
   const transcript = message.transcript || '';
-  const summary = message.summary || '';
+  const summary = message.analysis?.summary || message.summary || '';
   let recordingUrl = message.recordingUrl || '';
   const endedReason = message.endedReason || '';
   const durationSeconds = message.durationSeconds || message.call?.duration || 0;
