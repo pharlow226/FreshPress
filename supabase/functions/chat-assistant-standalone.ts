@@ -310,6 +310,7 @@ If the ORDER TRACKING INFO says the order was NOT found or orderInfo.found is fa
 **Hallucination prevention rules:**
 - If order data is not in the ORDER TRACKING INFO provided, do not make up any order details
 - If pricing data is not in the LIVE PRICING DATA provided, do not guess any price
+- If a user asks for an item (e.g. "Dry Cleaning") that is NOT listed in the LIVE PRICING DATA, explicitly state that it is not on the standard price list and direct them to WhatsApp. Do NOT repeat the price of a previous item.
 - If you are not sure about something, always say so honestly and direct the customer to WhatsApp or the website
 - Never assume, infer, or fill in missing data from your training knowledge`;
 }
@@ -369,8 +370,23 @@ Deno.serve(async (req: Request) => {
 
     // ── Step 2 — Load chat history ──────────────────────────────────────────
     let chatHistory: any[] = [];
+    let previousSummary = "";
     try {
-      const histRes = await fetch(
+      const [histRes, sessionRes] = await Promise.all([
+        fetch(`${SUPABASE_URL}/rest/v1/chat_messages?session_id=eq.${encodeURIComponent(sessionId)}&select=role,content,created_at&order=created_at.desc&limit=10`, { headers: dbH() }),
+        fetch(`${SUPABASE_URL}/rest/v1/chat_sessions?session_id=eq.${encodeURIComponent(sessionId)}&select=ai_summary&limit=1`, { headers: dbH() })
+      ]);
+      if (histRes.ok) {
+        const rows: any[] = await histRes.json();
+        chatHistory = [...rows].reverse();
+      }
+      if (sessionRes.ok) {
+        const sRows: any[] = await sessionRes.json();
+        if (sRows.length > 0 && sRows[0].ai_summary) previousSummary = sRows[0].ai_summary;
+      }
+    } catch (e) { console.warn('[chat-assistant] history fetch failed:', e); }
+
+
         `${SUPABASE_URL}/rest/v1/chat_messages?session_id=eq.${encodeURIComponent(sessionId)}&select=role,content,created_at&order=created_at.desc&limit=10`,
         { headers: dbH() },
       );
@@ -447,6 +463,9 @@ ${companyInfo}
 ## ORDER TRACKING INFO
 ${orderInfo}
 
+## PREVIOUS SESSION SUMMARY
+${previousSummary || 'No previous summary.'}
+
 ## CONVERSATION HISTORY
 ${JSON.stringify(last6, null, 2)}
 
@@ -461,7 +480,7 @@ You are Pressy, FreshPress Laundry's helpful AI assistant. Read the user's messa
   "suggested_actions": [],
   "requires_human": false,
   "create_order_payload": null,
-  "session_summary": "A concise cumulative summary of the entire conversation history, 2 to 4 sentences. Capture the core intents and outcomes."
+  "session_summary": "Update the PREVIOUS SESSION SUMMARY with the latest interactions. Ensure ALL past core intents (especially successful order placements and Order IDs) are preserved while adding the newest queries."
 }
 *NOTE on create_order_payload*: ONLY include an object here with { "customer_name":"", "phone":"", "email":"", "address":"", "pickup_date":"", "pickup_time_slot":"morning|afternoon|evening", "special_instructions":"" } if you have collected ALL 6 details. "special_instructions" is OPTIONAL and should capture things like 'use cold water' or 'fragile'. Otherwise, keep it null.
 
