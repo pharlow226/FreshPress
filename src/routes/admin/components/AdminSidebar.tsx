@@ -2,7 +2,7 @@
  * AdminSidebar — unchanged from original.
  * Import path corrected to new location in merged app.
  */
-import { BarChart3, Package, Users, DollarSign, UserCircle, ClipboardList, LogOut, Settings, Mic } from 'lucide-react';
+import { BarChart3, Package, Users, DollarSign, UserCircle, ClipboardList, LogOut, Settings, Mic, MessageSquare } from 'lucide-react';
 import {
   Sidebar, SidebarContent, SidebarGroup, SidebarGroupContent,
   SidebarGroupLabel, SidebarMenu, SidebarMenuButton, SidebarMenuItem,
@@ -12,6 +12,7 @@ import {
 const navItems = [
   { title: 'Overview',           icon: BarChart3,    key: 'overview' },
   { title: 'Voice Telemetry',    icon: Mic,          key: 'voice' },
+  { title: 'Chat Telemetry',     icon: MessageSquare,key: 'chat' },
   { title: 'All Orders',         icon: Package,      key: 'orders' },
   { title: 'Staff Management',   icon: Users,        key: 'staff' },
   { title: 'Pricing Management', icon: DollarSign,   key: 'pricing' },

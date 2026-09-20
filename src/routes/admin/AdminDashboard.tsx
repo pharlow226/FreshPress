@@ -19,6 +19,7 @@ import { CustomersPage }         from '@/routes/admin/components/CustomersPage';
 import { ActivityLogPage }       from '@/routes/admin/components/ActivityLogPage';
 import { CompanySettingsPage }   from '@/routes/admin/components/CompanySettingsPage';
 import { VoiceLogsPage }         from '@/routes/admin/components/VoiceLogsPage';
+import { ChatLogsPage }          from '@/routes/admin/components/ChatLogsPage';
 import { getStaffUser, clearStaffUser } from '@/lib/supabase';
 import { staffSignOut } from '@/lib/operations';
 
@@ -45,6 +46,7 @@ export default function AdminDashboard() {
     switch (activePage) {
       case 'overview':  return <OverviewPage />;
       case 'voice':     return <VoiceLogsPage />;
+        case 'chat':      return <ChatLogsPage />;
       case 'orders':    return <AllOrdersPage />;
       case 'staff':     return <StaffManagementPage />;
       case 'pricing':   return <PricingManagementPage />;

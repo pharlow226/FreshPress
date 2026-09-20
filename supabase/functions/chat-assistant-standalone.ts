@@ -240,7 +240,7 @@ function getSystemPrompt(companyRow: any | null): string {
 **Key rules:**
 - Always use LIVE PRICING DATA in the prompt - never guess prices
 - Always use ORDER TRACKING INFO for order status - never guess
-- Minimum order: ${minOrder} (ONLY mention this if explicitly asked, or if they are placing an order. Do NOT mention it for general pricing questions)
+- Minimum order: ${minOrder} (You MUST politely enforce this minimum order policy if a user tries to place an order, mentions a specific budget, or asks to wash a small amount of items that total under ${minOrder})
 - Hours: Monday-Saturday 7AM-8PM, closed Sundays
 - Free pickup and delivery within Lagos
 - Turnaround: 24-48 hours
