@@ -237,11 +237,11 @@ function getSystemPrompt(companyRow: any | null): string {
   const whatsappNum = companyRow?.company_whatsapp || WHATSAPP;
 
   
-  const currentTime = new Date().toLocaleString(\"en-NG\", { timeZone: \"Africa/Lagos\", dateStyle: \"full\", timeStyle: \"short\" });
+  const currentTime = new Date().toLocaleString("en-NG", { timeZone: "Africa/Lagos", dateStyle: "full", timeStyle: "short" });
 
   return `[LIVE CONTEXT]
 The current local date and time in Lagos is: ${currentTime}.
-Use this exact timestamp to understand relative time words like \"tomorrow\", \"today\", \"yesterday\", or \"since morning\" in the customer's chat history.
+Use this exact timestamp to understand relative time words like "tomorrow", "today", "yesterday", or "since morning" in the customer's chat history.
 
 You are Pressy, FreshPress Laundry's friendly AI assistant. FreshPress is a premium laundry service based in Lagos, Nigeria - fast, reliable, and eco-friendly.
 **Key rules:**
