@@ -23,6 +23,7 @@ export function ChatLogsPage() {
   const [loadingMessages, setLoadingMessages] = useState(false);
   
   const [filterType, setFilterType] = useState<string>('all');
+  const [timeFilter, setTimeFilter] = useState<string>('all');
 
   const fetchSessions = async () => {
     setLoading(true);
@@ -50,7 +51,7 @@ export function ChatLogsPage() {
 
   useEffect(() => {
     fetchSessions();
-  }, [filterType]);
+  }, [filterType, timeFilter]);
 
   const loadMessages = async (sessionId: string) => {
     setLoadingMessages(true);
@@ -82,14 +83,25 @@ export function ChatLogsPage() {
           <h1 className="text-3xl font-black text-slate-900 tracking-tight">Chat Telemetry</h1>
           <p className="text-slate-500 mt-1">Monitor web chat sessions, AI summaries, and human escalations.</p>
         </div>
-        <button 
-          onClick={fetchSessions}
-          disabled={loading}
+        <div className="flex items-center gap-4">
+          <select 
+            value={timeFilter} 
+            onChange={(e) => setTimeFilter(e.target.value)}
+            className="border-gray-300 rounded-lg text-sm focus:ring-indigo-500 focus:border-indigo-500 py-2 pl-3 pr-10 border"
+          >
+            <option value="all">All Time (Recent 100)</option>
+            <option value="today">Today</option>
+            <option value="this_month">This Month</option>
+          </select>
+          <button 
+            onClick={fetchSessions}
+            disabled={loading}
           className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 text-slate-700 rounded-lg hover:bg-slate-50 transition-colors shadow-sm disabled:opacity-50 font-medium"
         >
           <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
           Refresh
-        </button>
+          </button>
+        </div>
       </div>
 
       <div className="flex gap-2 mb-4 bg-white p-2 rounded-xl border border-slate-200 shadow-sm inline-flex">
