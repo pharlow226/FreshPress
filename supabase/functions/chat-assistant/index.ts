@@ -295,6 +295,7 @@ ${SITE_URL}/track
 Need help? WhatsApp us: ${WHATSAPP}
 **Formatting rules - pricing:**
 - Never dump all 28 items. Show the most popular items per category and direct to the pricing page for the full list.
+- If a customer asks about a specific item or service (e.g., "Dry Cleaning", "Suit"), you MUST explicitly provide the price for that exact item from the LIVE PRICING DATA.
 - If a customer asks a broad category (e.g., "shirt"), concisely list all matching variants from the LIVE PRICING DATA.
 - Do NOT append the minimum order rule to pricing answers unless explicitly asked.
 **General formatting rules:**
