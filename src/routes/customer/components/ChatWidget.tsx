@@ -194,6 +194,29 @@ const ChatWidget = () => {
     );
   };
 
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleGlobalKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
+        if (document.activeElement?.tagName === 'TEXTAREA' || document.activeElement?.tagName === 'INPUT') {
+          return;
+        }
+        e.preventDefault();
+        const selection = window.getSelection();
+        const range = document.createRange();
+        const chatNode = document.getElementById('freshpress-chat-history');
+        if (chatNode) {
+          range.selectNodeContents(chatNode);
+          selection?.removeAllRanges();
+          selection?.addRange(range);
+        }
+      }
+    };
+    window.addEventListener('keydown', handleGlobalKeyDown);
+    return () => window.removeEventListener('keydown', handleGlobalKeyDown);
+  }, [isOpen]);
+
   return (
     <>
       <div className="fixed bottom-6 right-6 z-50">
@@ -230,7 +253,7 @@ const ChatWidget = () => {
 
           {!isMinimized && (
             <>
-              <div className="flex-1 overflow-y-auto overflow-x-hidden p-4 bg-background">
+              <div id="freshpress-chat-history" tabIndex={0} className="flex-1 overflow-y-auto overflow-x-hidden p-4 bg-background focus:outline-none">
                 {isLoadingHistory ? (
                   <div className="flex items-center justify-center h-full">
                     <div className="text-center">
