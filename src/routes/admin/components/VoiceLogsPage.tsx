@@ -201,7 +201,7 @@ export function VoiceLogsPage() {
                         </div>
                       </td>
                       <td className="px-5 py-4 font-medium text-gray-900">
-                        {log.phone_number || <span className="text-indigo-600 bg-indigo-50 px-2 py-1 rounded-md text-xs">Web SDK Caller</span>}
+                        {log.phone_number || <span className="text-indigo-600 bg-indigo-50 px-2 py-1 rounded-md text-xs">Website Visitor</span>}
                       </td>
                       <td className="px-5 py-4 text-gray-600">
                         {Math.floor(log.duration_seconds / 60)}m {Math.floor(log.duration_seconds % 60)}s
