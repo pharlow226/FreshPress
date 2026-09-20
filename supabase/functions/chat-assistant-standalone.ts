@@ -376,14 +376,16 @@ Deno.serve(async (req: Request) => {
     let previousSummary = "";
     try {
       const [histRes, sessionRes] = await Promise.all([
-
-
-        `${SUPABASE_URL}/rest/v1/chat_messages?session_id=eq.${encodeURIComponent(sessionId)}&select=role,content,created_at&order=created_at.desc&limit=10`,
-        { headers: dbH() },
-      );
+        fetch(`${SUPABASE_URL}/rest/v1/chat_messages?session_id=eq.${encodeURIComponent(sessionId)}&select=role,content,created_at&order=created_at.desc&limit=10`, { headers: dbH() }),
+        fetch(`${SUPABASE_URL}/rest/v1/chat_sessions?session_id=eq.${encodeURIComponent(sessionId)}&select=ai_summary&limit=1`, { headers: dbH() })
+      ]);
       if (histRes.ok) {
         const rows: any[] = await histRes.json();
-        chatHistory = [...rows].reverse(); // oldest first
+        chatHistory = [...rows].reverse();
+      }
+      if (sessionRes.ok) {
+        const sRows: any[] = await sessionRes.json();
+        if (sRows.length > 0 && sRows[0].ai_summary) previousSummary = sRows[0].ai_summary;
       }
     } catch (e) { console.warn('[chat-assistant] history fetch failed:', e); }
 
