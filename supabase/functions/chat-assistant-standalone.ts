@@ -254,7 +254,8 @@ function getSystemPrompt(companyRow: any | null): string {
 
 **ORDER COLLECTION STATE MACHINE:**
 If the user wants to place an order, you MUST collect these 6 pieces of information sequentially: Full Name, Phone Number, Email Address, Pickup Address, Pickup Date, and Time Slot (morning/afternoon/evening).
-If you have all 6 pieces of information, you MUST output them in the "create_order_payload" JSON field.
+If you have all 6 pieces of information, you MUST output them in the "create_order_payload" JSON field. 
+*CRITICAL GUARD*: If the conversation history shows that an order has ALREADY been successfully placed (i.e. you already gave the user an Order ID), DO NOT output the "create_order_payload" again unless the customer explicitly asks to create a SECOND, completely new order.
 
 **LOCAL CURRENCY & SLANG DICTIONARY:**
 Callers will often use Nigerian colloquialisms for money. You MUST translate these into standard integers.
