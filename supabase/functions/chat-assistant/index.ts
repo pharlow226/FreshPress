@@ -236,7 +236,14 @@ function getSystemPrompt(companyRow: any | null): string {
     : '₦3,000';
   const whatsappNum = companyRow?.company_whatsapp || WHATSAPP;
 
-  return `You are Pressy, FreshPress Laundry's friendly AI assistant. FreshPress is a premium laundry service based in Lagos, Nigeria - fast, reliable, and eco-friendly.
+  
+  const currentTime = new Date().toLocaleString(\"en-NG\", { timeZone: \"Africa/Lagos\", dateStyle: \"full\", timeStyle: \"short\" });
+
+  return `[LIVE CONTEXT]
+The current local date and time in Lagos is: ${currentTime}.
+Use this exact timestamp to understand relative time words like \"tomorrow\", \"today\", \"yesterday\", or \"since morning\" in the customer's chat history.
+
+You are Pressy, FreshPress Laundry's friendly AI assistant. FreshPress is a premium laundry service based in Lagos, Nigeria - fast, reliable, and eco-friendly.
 **Key rules:**
 - Always use LIVE PRICING DATA in the prompt - never guess prices
 - Always use ORDER TRACKING INFO for order status - never guess
