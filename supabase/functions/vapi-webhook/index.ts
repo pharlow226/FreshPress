@@ -145,7 +145,14 @@ async function logEndOfCallReport(message: any) {
 
   const phone = message.call?.customer?.number || message.call?.phoneCallProviderDetails?.from || null;
   const transcript = message.transcript || '';
-  const summary = message.analysis?.summary || message.summary || '';
+  
+    console.log('[vapi-webhook] end-of-call payload keys:', Object.keys(message));
+    if (message.analysis) console.log('[vapi-webhook] analysis keys:', Object.keys(message.analysis));
+    if (message.call && message.call.analysis) console.log('[vapi-webhook] call.analysis keys:', Object.keys(message.call.analysis));
+    
+    const summary = message.analysis?.summary || message.call?.analysis?.summary || message.summary || '';
+    console.log('[vapi-webhook] extracted summary:', summary ? 'YES' : 'NO');
+
   let recordingUrl = message.recordingUrl || '';
   const endedReason = message.endedReason || '';
   const durationSeconds = message.durationSeconds || message.call?.duration || 0;
