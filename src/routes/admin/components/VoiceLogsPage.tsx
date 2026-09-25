@@ -18,10 +18,19 @@ interface VapiLog {
   created_at: string;
 }
 
+interface ElevenLabsQuota {
+  character_count: number;
+  character_limit: number;
+  tier: string;
+}
+
 export function VoiceLogsPage() {
   const [logs, setLogs] = useState<VapiLog[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedLog, setSelectedLog] = useState<VapiLog | null>(null);
+  const [elevenLabsQuota, setElevenLabsQuota] = useState<ElevenLabsQuota | null>(null);
+  const [quotaLoading, setQuotaLoading] = useState(true);
+  const [quotaError, setQuotaError] = useState<string | null>(null);
   
   // Filtering states
   const [filterType, setFilterType] = useState<string>('all');
@@ -64,12 +73,45 @@ export function VoiceLogsPage() {
     }
   };
 
+  const fetchElevenLabsQuota = async () => {
+    setQuotaLoading(true);
+    setQuotaError(null);
+    try {
+      const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+      const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+      const response = await fetch(`${supabaseUrl}/functions/v1/get-voice-quota`, {
+        headers: { 'apikey': supabaseKey, 'Authorization': `Bearer ${supabaseKey}` }
+      });
+      const data = await response.json();
+      if (data.error) throw new Error(data.error);
+      setElevenLabsQuota(data);
+    } catch (err: any) {
+      setQuotaError('ElevenLabs API key not set. Ask admin to add ELEVENLABS_API_KEY to Supabase secrets.');
+    } finally {
+      setQuotaLoading(false);
+    }
+  };
+
   useEffect(() => {
     fetchLogs();
   }, [filterType, startDate, endDate]);
 
+  useEffect(() => {
+    fetchElevenLabsQuota();
+  }, []);
+
   const totalMinutes = logs.reduce((acc, log) => acc + (log.duration_seconds / 60), 0);
   const totalCost = logs.reduce((acc, log) => acc + Number(log.cost), 0);
+
+  // ElevenLabs quota helpers
+  const quotaPercent = elevenLabsQuota
+    ? Math.round((elevenLabsQuota.character_count / elevenLabsQuota.character_limit) * 100)
+    : 0;
+  const charsRemaining = elevenLabsQuota
+    ? elevenLabsQuota.character_limit - elevenLabsQuota.character_count
+    : 0;
+  const minsRemaining = Math.round(charsRemaining / 1000); // ~1000 chars ≈ 1 min audio
+  const quotaBarColor = quotaPercent >= 90 ? 'bg-red-500' : quotaPercent >= 70 ? 'bg-yellow-500' : 'bg-green-500';
 
   return (
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
@@ -121,7 +163,7 @@ export function VoiceLogsPage() {
       </div>
 
       {/* Telemetry Overview Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-6">
         <Card className="border-indigo-100 shadow-sm">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium text-indigo-900">Total AI Calls</CardTitle>
@@ -150,6 +192,37 @@ export function VoiceLogsPage() {
           <CardContent>
             <div className="text-3xl font-black text-green-700">${totalCost.toFixed(3)}</div>
             <p className="text-xs text-green-600/70 font-medium">Vapi API usage cost</p>
+          </CardContent>
+        </Card>
+
+        {/* ElevenLabs Live Voice Quota Card */}
+        <Card className="border-purple-100 shadow-sm">
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium text-purple-900">🎙️ Voice Quota</CardTitle>
+            <div className="p-2 bg-purple-50 rounded-full"><FileAudio className="h-4 w-4 text-purple-600" /></div>
+          </CardHeader>
+          <CardContent>
+            {quotaLoading ? (
+              <div className="text-sm text-muted-foreground animate-pulse">Loading...</div>
+            ) : quotaError ? (
+              <div className="text-xs text-red-500 leading-relaxed">{quotaError}</div>
+            ) : elevenLabsQuota ? (
+              <div className="space-y-2">
+                <div className="text-2xl font-black text-purple-700">
+                  {elevenLabsQuota.character_count.toLocaleString()}
+                  <span className="text-sm font-normal text-purple-400"> / {elevenLabsQuota.character_limit.toLocaleString()}</span>
+                </div>
+                <div className="w-full bg-purple-100 rounded-full h-2">
+                  <div
+                    className={`h-2 rounded-full transition-all ${quotaBarColor}`}
+                    style={{ width: `${Math.min(quotaPercent, 100)}%` }}
+                  />
+                </div>
+                <p className="text-xs text-purple-600/70 font-medium">
+                  {quotaPercent}% used · ~{minsRemaining} min left · <span className="capitalize">{elevenLabsQuota.tier}</span>
+                </p>
+              </div>
+            ) : null}
           </CardContent>
         </Card>
       </div>

@@ -3,6 +3,11 @@ import json
 
 assistant_id = "4fea51b0-d6b7-4e9a-8a4a-8cb59ad6cc1b"
 api_key = "3bb845e1-6d1e-44d5-8850-f5081cab2bb9"
+url = f"https://api.vapi.ai/assistant/{assistant_id}"
+
+req = urllib.request.Request(url, headers={"Authorization": f"Bearer {api_key}"})
+with urllib.request.urlopen(req) as response:
+    assistant = json.loads(response.read().decode('utf-8'))
 
 system_prompt = """You are Pressy, FreshPress Laundry's highly intelligent, warm, and friendly AI voice assistant. FreshPress is a premium laundry service based in Lagos, Nigeria.
 
@@ -13,7 +18,8 @@ system_prompt = """You are Pressy, FreshPress Laundry's highly intelligent, warm
 - **STT Noise Filtering:** Ignore filler words (e.g., "uhm", "ah", "eh") or background noise artifacts injected by the transcription engine. Focus entirely on user intent.
 
 **ORDER COLLECTION STATE MACHINE (CRITICAL FLOW):**
-If the user wants to place an order, you MUST collect these 6 pieces of information sequentially.
+- **WAIT FOR CONSENT:** Do NOT force the user into the order collection state machine just because they ask for pricing. Only start collecting details if the user explicitly says they want to place an order.
+If the user explicitly confirms they want to place an order, you MUST collect these 6 pieces of information sequentially.
 *GUARD:* If the user naturally states any of these details earlier in the call, check it off mentally. NEVER ask for information the user has already volunteered. Collect the remaining details one by one:
 1. Full Name: "Could I get your full name, please?"
 2. Phone Number: "Thank you. What's the best phone number to reach you on?" (Once received, read it back rapidly to confirm: "Just to be sure, that's [number], correct?")
@@ -50,47 +56,37 @@ Example: If a customer says "I thought the duvet was two five", you must interpr
 2. NUMBER NORMALIZATION: ALWAYS format large numbers as spoken words. Never output "2500" or "3000". You must output "two thousand five hundred" or "three thousand".
 3. PRONUNCIATION: ALWAYS pronounce the currency "Naira" phonetically as "Nye-rah" so the voice engine does not mispronounce it as "narrow".
 4. COMPANY NAME: ALWAYS pronounce the company name as two distinct words: "Fresh Press". Never say "FreshPress" as a single combined word.
-5. TONE: Keep your responses short, conversational, and to the point."""
+5. TONE: Keep your responses short, conversational, and to the point.
 
-summary_prompt = """Write a highly detailed, chronological summary of the call for QA and Telemetry purposes. 
-Do not write a generic "happy path" summary. You MUST explicitly document the following:
-1. The user's initial intent vs. how the AI initially interpreted it.
-2. Any friction, misunderstandings, or AI UX failures (e.g., if the AI read too much information, info-dumped, or if the user had to interrupt and correct the AI).
-3. Any Speech-to-Text misquotes or slang the user used.
-4. The final resolution of the call (e.g., Order placed, questions answered, user abandoned).
+**Call Termination & UX Rules:**
+- ENDING THE CALL: If the user says goodbye, thank you, or clearly indicates the conversation is over, say a brief polite goodbye and then IMMEDIATELY trigger the endCall function to hang up. Never wait in silence after saying goodbye.
+- NAMES & EMAILS: When collecting names or emails, explicitly ask the user to "spell it out" if it sounds complex. When reading an email back to the user to confirm, format it smoothly for speech (e.g. say "at gmail dot com").
 
-Format the summary with brutal honesty so the engineering team can identify exactly where the conversational flow broke down."""
+**STT Translation Layer (NIGERIAN ACCENT):**
+If the transcription mishears local phonetics, silently translate them before querying pricing or responding:
+- "Juve's mom", "do it more", "download address", or "download" -> user means "duvet"
+- "Gall" -> user means "gown"
+- "Sood" -> user means "suit"
+- "Troza" -> user means "trouser"
+- "Small", "Duvet small", or "student duvet" -> user means "Duvet (Small)"
+- "Large", "Duvet large", or "family duvet" -> user means "Duvet (Large)"
+- If the user only says "Duvet", explicitly ask them: "Do you mean a small or large duvet?"
+- If the user only says "Bedsheet", explicitly ask them: "Do you mean a single or double bedsheet?"
+Never ask the user to clarify weird words like "download address". Assume it is the laundry item based on context.
 
-# Fetch current config
-req = urllib.request.Request(f"https://api.vapi.ai/assistant/{assistant_id}", headers={"Authorization": f"Bearer {api_key}"})
+**MATH & PRICING RULES:**
+- DO NOT HALLUCINATE MATH: If a user asks for the price of multiple items (e.g. "4 T-shirts"), do not invent a random total like 3000. Instead, state the unit price from the database and confidently calculate the correct math: "A T-shirt is 600 Naira each, so 4 would be 2400 Naira."
+
+**PRICING QUERY FORMAT:**
+When a customer asks for the price of an item, you MUST mimic this exact conversational flow:
+1. State the unit price clearly.
+2. Politely mention the current minimum order (call get_company_info to retrieve this dynamically).
+3. Gently ask if they have any other questions or items to add. Do NOT aggressively push for an order or ask for their name.
+*Example:* "A T-shirt is 600 Naira. Just to let you know, our minimum order for pickup is [insert minimum order from database]. Did you have any other items you'd like to check?"
+"""
+
+assistant["model"]["messages"][0]["content"] = system_prompt
+
+req = urllib.request.Request(url, data=json.dumps({"model": assistant["model"]}).encode('utf-8'), headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}, method='PATCH')
 with urllib.request.urlopen(req) as response:
-    data = json.loads(response.read().decode())
-
-# Update system prompt
-data["model"]["messages"][0]["content"] = system_prompt
-
-# Update summary prompt
-data["analysisPlan"]["summaryPlan"]["messages"][0]["content"] = summary_prompt
-
-# Send PATCH request (only sending the fields we updated is safer, but vapi accepts full object on PATCH)
-patch_data = {
-    "model": data["model"],
-    "analysisPlan": data["analysisPlan"]
-}
-
-req_patch = urllib.request.Request(
-    f"https://api.vapi.ai/assistant/{assistant_id}", 
-    data=json.dumps(patch_data).encode(), 
-    headers={
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
-    },
-    method="PATCH"
-)
-
-try:
-    with urllib.request.urlopen(req_patch) as response:
-        print("Successfully updated Vapi assistant!")
-except urllib.error.HTTPError as e:
-    print(f"Error: {e.code} - {e.read().decode()}")
-
+    print("Prompt firmly written using Python.")
