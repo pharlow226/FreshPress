@@ -198,7 +198,7 @@ export function VoiceLogsPage() {
         {/* ElevenLabs Live Voice Quota Card */}
         <Card className="border-purple-100 shadow-sm">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium text-purple-900">🎙️ Voice Quota</CardTitle>
+            <CardTitle className="text-sm font-medium text-purple-900">Voice Quota</CardTitle>
             <div className="p-2 bg-purple-50 rounded-full"><FileAudio className="h-4 w-4 text-purple-600" /></div>
           </CardHeader>
           <CardContent>
