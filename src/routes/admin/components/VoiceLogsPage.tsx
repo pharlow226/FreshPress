@@ -24,6 +24,98 @@ interface ElevenLabsQuota {
   tier: string;
 }
 
+function toStoragePath(value: string): string {
+  if (!value) return '';
+  const marker = '/recordings/';
+  const i = value.indexOf(marker);
+  const path = i >= 0 ? value.slice(i + marker.length) : value;
+  return path.split('?')[0];
+}
+
+export function RecordingPlayer({ recording, callId }: { recording: string; callId: string }) {
+  const [playUrl, setPlayUrl] = useState<string | null>(null);
+  const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    const path = toStoragePath(recording);
+    if (!path) {
+      setPlayUrl(null);
+      return;
+    }
+
+    setLoading(true);
+    setFailed(false);
+
+    (async () => {
+      try {
+        const bucket = supabase.storage.from('recordings');
+        const play = await bucket.createSignedUrl(path, 3600);
+        const dl = await bucket.createSignedUrl(path, 3600, { download: `call-${callId}.wav` });
+        
+        if (cancelled) return;
+        
+        if (play.error || !play.data?.signedUrl) {
+          if (recording.startsWith('http')) {
+            setPlayUrl(recording);
+            setDownloadUrl(recording);
+          } else {
+            setFailed(true);
+          }
+          return;
+        }
+        
+        setPlayUrl(play.data.signedUrl);
+        setDownloadUrl(dl.data?.signedUrl || play.data.signedUrl);
+      } catch {
+        if (!cancelled) {
+          if (recording.startsWith('http')) {
+            setPlayUrl(recording);
+            setDownloadUrl(recording);
+          } else {
+            setFailed(true);
+          }
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [recording, callId]);
+
+  if (!recording) return <p className="text-xs text-gray-500">No recording available.</p>;
+  if (failed) return <p className="text-xs text-red-500">Recording could not be loaded.</p>;
+  if (loading || !playUrl) return <p className="text-xs text-gray-400 animate-pulse">Loading secure recording...</p>;
+
+  return (
+    <div className="space-y-2">
+      <audio 
+        key={playUrl} 
+        controls 
+        preload="metadata"
+        src={playUrl} 
+        className="w-full h-10 rounded-lg" 
+      >
+        Your browser does not support the audio element.
+      </audio>
+      <div className="flex justify-between items-center text-xs">
+        <a 
+          href={downloadUrl ?? playUrl} 
+          download={`call-${callId}.wav`}
+          target="_blank" 
+          rel="noreferrer" 
+          className="text-indigo-600 hover:text-indigo-800 font-medium underline"
+        >
+          Download recording
+        </a>
+      </div>
+    </div>
+  );
+}
+
 export function VoiceLogsPage() {
   const [logs, setLogs] = useState<VapiLog[]>([]);
   const [loading, setLoading] = useState(true);
@@ -336,16 +428,7 @@ export function VoiceLogsPage() {
                       <h4 className="text-sm font-bold flex items-center gap-2 text-gray-900">
                         <FileAudio className="w-4 h-4 text-indigo-500" /> Audio Recording
                       </h4>
-                      <audio 
-                        key={selectedLog.id} 
-                        controls 
-                        preload="metadata"
-                        src={selectedLog.recording_url} 
-                        className="w-full h-10 rounded-lg" 
-                      >
-                        Your browser does not support the audio element.
-                      </audio>
-                      <p className="text-xs text-gray-500">If audio does not play, <a href={selectedLog.recording_url} target="_blank" rel="noreferrer" className="text-indigo-600 underline">click here to open directly</a>.</p>
+                      <RecordingPlayer recording={selectedLog.recording_url} callId={selectedLog.call_id} />
                     </div>
                   )}
 
