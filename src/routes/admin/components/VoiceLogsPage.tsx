@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { supabase } from '@/lib/supabase';
-import { PhoneCall, Clock, DollarSign, PlayCircle, FileText, RefreshCw, Calendar, FileAudio } from 'lucide-react';
+import { PhoneCall, Clock, DollarSign, PlayCircle, FileText, RefreshCw, Calendar, FileAudio, ShieldAlert } from 'lucide-react';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 
 interface VapiLog {
@@ -45,7 +45,6 @@ export function VoiceLogsPage() {
         .select('*')
         .order('created_at', { ascending: false });
 
-      // Apply date filters
       const now = new Date();
       if (filterType === 'today') {
         const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
@@ -54,13 +53,12 @@ export function VoiceLogsPage() {
         const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
         query = query.gte('created_at', startOfMonth);
       } else if (filterType === 'custom' && startDate && endDate) {
-        // Add one day to end date to include the entire end day
         const endDay = new Date(endDate);
         endDay.setDate(endDay.getDate() + 1);
         query = query.gte('created_at', new Date(startDate).toISOString())
                      .lt('created_at', endDay.toISOString());
       } else {
-        query = query.limit(100); // Default limit for 'all'
+        query = query.limit(100);
       }
         
       const { data, error } = await query;
@@ -86,7 +84,7 @@ export function VoiceLogsPage() {
       if (data.error) throw new Error(data.error);
       setElevenLabsQuota(data);
     } catch (err: any) {
-      setQuotaError('ElevenLabs API key not set. Ask admin to add ELEVENLABS_API_KEY to Supabase secrets.');
+      setQuotaError('ElevenLabs API key not configured.');
     } finally {
       setQuotaLoading(false);
     }
@@ -103,29 +101,34 @@ export function VoiceLogsPage() {
   const totalMinutes = logs.reduce((acc, log) => acc + (log.duration_seconds / 60), 0);
   const totalCost = logs.reduce((acc, log) => acc + Number(log.cost), 0);
 
-  // ElevenLabs quota helpers
   const quotaPercent = elevenLabsQuota
     ? Math.round((elevenLabsQuota.character_count / elevenLabsQuota.character_limit) * 100)
     : 0;
   const charsRemaining = elevenLabsQuota
     ? elevenLabsQuota.character_limit - elevenLabsQuota.character_count
     : 0;
-  const minsRemaining = Math.round(charsRemaining / 1000); // ~1000 chars ≈ 1 min audio
+  const minsRemaining = Math.round(charsRemaining / 1000);
   const quotaBarColor = quotaPercent >= 90 ? 'bg-red-500' : quotaPercent >= 70 ? 'bg-yellow-500' : 'bg-green-500';
+
+  const isVoiceSecurityAlert = (log: VapiLog) => {
+    const summary = (log.summary || '').toLowerCase();
+    const transcript = (log.transcript || '').toLowerCase();
+    return summary.includes('spoken injection') || summary.includes('security alert') || transcript.includes('ignore all instructions') || transcript.includes('system prompt');
+  };
 
   return (
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
         <div>
           <h2 className="text-2xl font-bold tracking-tight">AI Voice Telemetry</h2>
-          <p className="text-muted-foreground">Monitor voicebot interactions, call transcripts, and usage metrics.</p>
+          <p className="text-muted-foreground">Monitor voicebot interactions, call transcripts, security guardrails, and usage metrics.</p>
         </div>
         
         <div className="flex flex-wrap items-center gap-3">
           <select 
             value={filterType} 
             onChange={(e) => setFilterType(e.target.value)}
-            className="border-gray-300 rounded-lg text-sm focus:ring-indigo-500 focus:border-indigo-500"
+            className="border-gray-300 rounded-lg text-sm focus:ring-indigo-500 focus:border-indigo-500 py-2 pl-3 pr-8 border bg-white shadow-sm"
           >
             <option value="all">All Time (Recent 100)</option>
             <option value="today">Today</option>
@@ -139,14 +142,14 @@ export function VoiceLogsPage() {
                 type="date" 
                 value={startDate} 
                 onChange={(e) => setStartDate(e.target.value)}
-                className="border-gray-300 rounded-lg text-sm"
+                className="border-gray-300 rounded-lg text-sm p-1.5 border bg-white"
               />
-              <span className="text-gray-500">to</span>
+              <span className="text-gray-500 text-xs">to</span>
               <input 
                 type="date" 
                 value={endDate} 
                 onChange={(e) => setEndDate(e.target.value)}
-                className="border-gray-300 rounded-lg text-sm"
+                className="border-gray-300 rounded-lg text-sm p-1.5 border bg-white"
               />
             </div>
           )}
@@ -154,7 +157,7 @@ export function VoiceLogsPage() {
           <button 
             onClick={fetchLogs}
             disabled={loading}
-            className="flex items-center gap-2 bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 transition shadow-sm"
+            className="flex items-center gap-2 bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 transition shadow-sm text-sm font-medium"
           >
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
             <span className="hidden sm:inline">Refresh Logs</span>
@@ -219,7 +222,7 @@ export function VoiceLogsPage() {
                   />
                 </div>
                 <p className="text-xs text-purple-600/70 font-medium">
-                  {quotaPercent}% used · ~{minsRemaining} min left · <span className="capitalize">{elevenLabsQuota.tier}</span>
+                  {quotaPercent}% used | ~{minsRemaining} min left | <span className="capitalize">{elevenLabsQuota.tier}</span>
                 </p>
               </div>
             ) : null}
@@ -231,8 +234,8 @@ export function VoiceLogsPage() {
         {/* Logs Table */}
         <div className="lg:col-span-2 bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
           <div className="p-5 border-b bg-gray-50 flex items-center justify-between">
-            <h3 className="font-semibold text-gray-900 flex items-center gap-2">
-              <FileText className="w-4 h-4" /> Recent Call Logs
+            <h3 className="font-semibold text-gray-900 flex items-center gap-2 text-sm">
+              <FileText className="w-4 h-4 text-indigo-600" /> Recent Call Logs
             </h3>
           </div>
           <div className="overflow-x-auto max-h-[600px] overflow-y-auto">
@@ -256,39 +259,52 @@ export function VoiceLogsPage() {
                     </td>
                   </tr>
                 ) : (
-                  logs.map((log) => (
-                    <tr 
-                      key={log.id} 
-                      className={`hover:bg-indigo-50/50 cursor-pointer transition-colors ${selectedLog?.id === log.id ? 'bg-indigo-50 border-l-4 border-indigo-500' : 'border-l-4 border-transparent'}`}
-                      onClick={() => setSelectedLog(log)}
-                    >
-                      <td className="px-5 py-4 whitespace-nowrap">
-                        <div className="flex items-center gap-2">
-                          <Calendar className="w-4 h-4 text-gray-400" />
-                          <span className="font-medium text-gray-900">
-                            {new Date(log.created_at).toLocaleDateString()}
-                          </span>
-                          <span className="text-gray-500 text-xs">
-                            {new Date(log.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                          </span>
-                        </div>
-                      </td>
-                      <td className="px-5 py-4 font-medium text-gray-900">
-                        {log.phone_number || <span className="text-indigo-600 bg-indigo-50 px-2 py-1 rounded-md text-xs">Website Visitor</span>}
-                      </td>
-                      <td className="px-5 py-4 text-gray-600">
-                        {Math.floor(log.duration_seconds / 60)}m {Math.floor(log.duration_seconds % 60)}s
-                      </td>
-                      <td className="px-5 py-4">
-                        <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold ${
-                          log.ended_reason.includes('customer') ? 'bg-green-100 text-green-800' : 
-                          log.ended_reason.includes('assistant') ? 'bg-blue-100 text-blue-800' : 'bg-red-100 text-red-800'
-                        }`}>
-                          {log.ended_reason.replace(/-/g, ' ')}
-                        </span>
-                      </td>
-                    </tr>
-                  ))
+                  logs.map((log) => {
+                    const isAlert = isVoiceSecurityAlert(log);
+                    return (
+                      <tr 
+                        key={log.id} 
+                        className={`hover:bg-indigo-50/50 cursor-pointer transition-colors ${selectedLog?.id === log.id ? 'bg-indigo-50 border-l-4 border-indigo-500' : 'border-l-4 border-transparent'}`}
+                        onClick={() => setSelectedLog(log)}
+                      >
+                        <td className="px-5 py-4 whitespace-nowrap">
+                          <div className="flex items-center gap-2">
+                            <Calendar className="w-4 h-4 text-gray-400" />
+                            <span className="font-medium text-gray-900">
+                              {new Date(log.created_at).toLocaleDateString()}
+                            </span>
+                            <span className="text-gray-500 text-xs">
+                              {new Date(log.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                            </span>
+                          </div>
+                        </td>
+                        <td className="px-5 py-4 font-medium text-gray-900">
+                          <div className="flex items-center gap-2">
+                            {isAlert && <ShieldAlert className="w-4 h-4 text-red-600 flex-shrink-0" />}
+                            {log.phone_number || <span className="text-indigo-600 bg-indigo-50 px-2 py-1 rounded-md text-xs">Website Visitor</span>}
+                          </div>
+                        </td>
+                        <td className="px-5 py-4 text-gray-600">
+                          {Math.floor(log.duration_seconds / 60)}m {Math.floor(log.duration_seconds % 60)}s
+                        </td>
+                        <td className="px-5 py-4">
+                          <div className="flex flex-col gap-1 items-start">
+                            {isAlert && (
+                              <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-red-100 text-red-800 border border-red-200">
+                                SECURITY ALERT
+                              </span>
+                            )}
+                            <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold ${
+                              log.ended_reason.includes('customer') ? 'bg-green-100 text-green-800' : 
+                              log.ended_reason.includes('assistant') ? 'bg-blue-100 text-blue-800' : 'bg-red-100 text-red-800'
+                            }`}>
+                              {log.ended_reason.replace(/-/g, ' ')}
+                            </span>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })
                 )}
               </tbody>
             </table>
@@ -301,7 +317,14 @@ export function VoiceLogsPage() {
             <Card className="sticky top-20 shadow-md border-indigo-100 overflow-hidden">
               <CardHeader className="border-b bg-gradient-to-r from-indigo-50 to-white pb-4">
                 <CardTitle className="text-base flex items-center justify-between text-indigo-950">
-                  <span className="font-bold">Call Details</span>
+                  <span className="font-bold flex items-center gap-2">
+                    Call Details
+                    {isVoiceSecurityAlert(selectedLog) && (
+                      <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-red-100 text-red-800 border border-red-200 flex items-center gap-1">
+                        <ShieldAlert className="w-3 h-3 text-red-600" /> SPOKEN INJECTION FLAGGED
+                      </span>
+                    )}
+                  </span>
                   <span className="text-sm font-semibold text-green-600 bg-green-50 px-2 py-1 rounded-md">${Number(selectedLog.cost).toFixed(3)}</span>
                 </CardTitle>
               </CardHeader>
@@ -322,7 +345,7 @@ export function VoiceLogsPage() {
                       >
                         Your browser does not support the audio element.
                       </audio>
-                      <p className="text-xs text-gray-500">If the audio does not play, <a href={selectedLog.recording_url} target="_blank" rel="noreferrer" className="text-indigo-600 underline">click here to open it directly</a>.</p>
+                      <p className="text-xs text-gray-500">If audio does not play, <a href={selectedLog.recording_url} target="_blank" rel="noreferrer" className="text-indigo-600 underline">click here to open directly</a>.</p>
                     </div>
                   )}
 
@@ -331,7 +354,11 @@ export function VoiceLogsPage() {
                       <h4 className="text-sm font-bold flex items-center gap-2 text-gray-900">
                         <FileText className="w-4 h-4 text-indigo-500" /> AI Summary
                       </h4>
-                      <p className="text-sm text-gray-700 bg-amber-50/50 p-4 rounded-xl border border-amber-100 leading-relaxed">
+                      <p className={`text-xs sm:text-sm p-4 rounded-xl border leading-relaxed ${
+                        isVoiceSecurityAlert(selectedLog) 
+                          ? 'bg-red-50 text-red-950 border-red-200 font-medium' 
+                          : 'text-gray-700 bg-amber-50/50 border-amber-100'
+                      }`}>
                         {selectedLog.summary}
                       </p>
                     </div>
@@ -341,7 +368,7 @@ export function VoiceLogsPage() {
                     <h4 className="text-sm font-bold flex items-center gap-2 text-gray-900">
                       <PlayCircle className="w-4 h-4 text-indigo-500" /> Full Transcript
                     </h4>
-                    <div className="text-sm text-gray-700 bg-gray-50 p-4 rounded-xl border border-gray-200 whitespace-pre-wrap font-mono text-xs leading-loose">
+                    <div className="text-xs text-gray-700 bg-gray-50 p-4 rounded-xl border border-gray-200 whitespace-pre-wrap font-mono leading-loose">
                       {selectedLog.transcript || 'No transcript available.'}
                     </div>
                   </div>

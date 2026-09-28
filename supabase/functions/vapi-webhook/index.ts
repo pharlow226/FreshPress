@@ -1,9 +1,9 @@
 /**
- * vapi-webhook-standalone.ts
+ * vapi-webhook.ts
  * Deploy as: "vapi-webhook" in Supabase Dashboard -> Edge Functions
  *
  * Required secrets:
- *   SERVICE_ROLE_KEY, SUPABASE_URL
+ *   SERVICE_ROLE_KEY, SUPABASE_URL, VAPI_WEBHOOK_SECRET, VAPI_API_KEY
  */
 
 const SUPABASE_URL     = Deno.env.get('SUPABASE_URL')!;
@@ -24,7 +24,27 @@ function dbH() {
   };
 }
 
-// ── Tool Implementations ──────────────────────────────────────────────────────
+// ── Anti-Prompt Injection & Spoken Jailbreak Guardrail ────────────────────────
+const VOICE_INJECTION_PATTERNS = [
+  /ignore\s+(all\s+)?(previous\s+|prior\s+|above\s+|system\s+)?instructions/i,
+  /you\s+are\s+(now\s+)?(no\s+longer|codebot|dan|developer\s+mode|unconstrained|jailbroken)/i,
+  /system\s+prompt/i,
+  /system\s+override/i,
+  /developer\s+override/i,
+  /admin\s+mode/i,
+  /reveal\s+(your\s+)?(instructions|system\s+rules|api\s+key|prompt)/i,
+  /repeat\s+(everything|the\s+prompt|all\s+words)\s+(above|before)/i,
+  /\b(def|class|import|function|linear_search)\b/i,
+  /write\s+(a\s+)?(python|javascript|typescript|c\+\+|java|sql|code|script|algorithm)/i,
+  /drop\s+table|select\s+\*\s+from/i,
+];
+
+function isSpokenInjection(text: string): boolean {
+  if (!text) return false;
+  return VOICE_INJECTION_PATTERNS.some(regex => regex.test(text));
+}
+
+// ── Tool Implementations with Strict Validation ───────────────────────────────
 
 async function getPricing(args: any) {
   let url = `${SUPABASE_URL}/rest/v1/pricing?active=eq.true&select=service_name,category,price,unit&order=display_order.asc`;
@@ -33,7 +53,6 @@ async function getPricing(args: any) {
   const rows = await res.json();
   if (rows.length === 0) return "No pricing data found.";
   
-  // Format nicely for the AI to read
   const cats: Record<string, string[]> = {};
   for (const r of rows) {
     const cat = r.category || 'Other';
@@ -62,6 +81,7 @@ async function getCompanyInfo(args: any) {
   if (c.company_address) info += `- Address: ${c.company_address}\n`;
   if (c.company_phone) info += `- Phone/WhatsApp: ${c.company_phone}\n`;
   if (c.company_email) info += `- Email: ${c.company_email}\n`;
+  
   // Fix TTS pronunciation for common Nigerian banks
   let bankName = c.bank_name || 'Bank';
   if (bankName.toLowerCase().includes('opay')) {
@@ -78,8 +98,18 @@ async function getCompanyInfo(args: any) {
 }
 
 async function checkOrderStatus(args: any) {
-  const orderId = args.order_id?.toUpperCase();
-  if (!orderId) return "Please provide a valid order ID (e.g. LAU-123456).";
+  const rawId = (args.order_id || '').toString().trim();
+  
+  // Security guardrail: Check for prompt injection in tool parameter
+  if (isSpokenInjection(rawId)) {
+    console.warn(`[SECURITY ALERT: VOICE_INJECTION_PARAM] Invalid order status parameter: "${rawId}"`);
+    return "I can only check valid FreshPress order numbers. Please provide a standard Order ID like LAU-123456.";
+  }
+
+  const orderId = rawId.toUpperCase();
+  if (!orderId || !/^LAU-\d{6}$/i.test(orderId)) {
+    return "Please provide a valid order ID in the format LAU-123456.";
+  }
   
   const res = await fetch(`${SUPABASE_URL}/rest/v1/orders?order_id=eq.${encodeURIComponent(orderId)}&select=order_id,status,payment_status,total_amount,pickup_date,pickup_time_slot,delay_reason`, { headers: dbH() });
   if (!res.ok) return "Failed to lookup order.";
@@ -99,14 +129,21 @@ async function checkOrderStatus(args: any) {
 
 async function createPickupOrder(args: any) {
   const { customer_name, phone, email, address, pickup_date, pickup_time_slot } = args;
-  if (!customer_name || !phone || !email || !address || !pickup_date || !pickup_time_slot) {
-    return "Missing required fields. Need name, phone, email, address, date, and time slot.";
+  
+  // Security guardrail: Check if any argument contains injection payloads
+  const combinedArgs = `${customer_name || ''} ${phone || ''} ${email || ''} ${address || ''} ${pickup_date || ''}`;
+  if (isSpokenInjection(combinedArgs)) {
+    console.warn(`[SECURITY ALERT: VOICE_INJECTION_PARAM] Invalid order creation payload: "${combinedArgs}"`);
+    return "I could not process the booking because the information provided contains invalid terms. Please state your full name and pickup address clearly.";
   }
 
-    let validTimeSlot = 'morning';
+  if (!customer_name || !phone || !email || !address || !pickup_date || !pickup_time_slot) {
+    return "Missing required fields. Need customer name, phone number, email address, pickup address, date, and time slot.";
+  }
+
+  let validTimeSlot = 'morning';
   const slotLower = (pickup_time_slot || '').toLowerCase();
   
-  // Smarter slot mapping handling times
   if (slotLower.includes('afternoon') || slotLower.match(/12pm|1pm|2pm|3pm|12:00|13:00|14:00|15:00/)) {
     validTimeSlot = 'afternoon';
   } else if (slotLower.includes('evening') || slotLower.match(/4pm|5pm|6pm|7pm|16:00|17:00|18:00|19:00/)) {
@@ -116,21 +153,21 @@ async function createPickupOrder(args: any) {
   const res = await fetch(`${SUPABASE_URL}/functions/v1/create-order`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-      customer_name,
-      email: email.toLowerCase().replace(/\s/g, ''),
-      phone,
-      address,
+    body: JSON.stringify({
+      customer_name: String(customer_name).slice(0, 100),
+      email: String(email).toLowerCase().replace(/\s/g, '').slice(0, 100),
+      phone: String(phone).slice(0, 25),
+      address: String(address).slice(0, 250),
       pickup_date,
       pickup_time_slot: validTimeSlot,
-      special_instructions: "Created via Voice AI",
+      special_instructions: "Created via Voice AI Assistant",
       source: 'phone'
     })
   });
 
   if (!res.ok) {
     console.error("Order creation failed", await res.text());
-    return "Failed to create order due to a system error. Please instruct the customer to use the website.";
+    return "Failed to create order due to a system error. Please instruct the caller to use the website at fresh-press-chi.vercel.app or reach us on WhatsApp.";
   }
   
   const data = await res.json();
@@ -146,35 +183,33 @@ async function logEndOfCallReport(message: any) {
   const phone = message.call?.customer?.number || message.call?.phoneCallProviderDetails?.from || null;
   const transcript = message.transcript || '';
   
-    console.log('[vapi-webhook] end-of-call payload keys:', Object.keys(message));
-    if (message.analysis) console.log('[vapi-webhook] analysis keys:', Object.keys(message.analysis));
-    if (message.call && message.call.analysis) console.log('[vapi-webhook] call.analysis keys:', Object.keys(message.call.analysis));
-    
-    const summary = message.analysis?.summary || message.call?.analysis?.summary || message.summary || '';
-    console.log('[vapi-webhook] extracted summary:', summary ? 'YES' : 'NO');
+  let summary = message.analysis?.summary || message.call?.analysis?.summary || message.summary || '';
+  
+  // Security Guardrail: Scan voice transcript for spoken prompt injection
+  const injectionDetected = isSpokenInjection(transcript);
+  if (injectionDetected) {
+    console.warn(`[SECURITY ALERT: VOICE_INJECTION] Spoken injection detected in call ${callId} from ${phone}`);
+    summary = `[SECURITY ALERT: SPOKEN INJECTION ATTEMPT DETECTED] ${summary}`;
+  }
 
   let recordingUrl = message.recordingUrl || '';
   const endedReason = message.endedReason || '';
   const durationSeconds = message.durationSeconds || message.call?.duration || 0;
   const cost = message.cost || 0;
 
-  // Securely intercept and host the audio file to fetch and store the audio recording for internal observability
   if (recordingUrl && callId) {
     try {
-      // 1. Fetch the actual call details from Vapi
       const vapiRes = await fetch(`https://api.vapi.ai/call/${callId}`, {
         headers: { 'Authorization': `Bearer ${Deno.env.get('VAPI_API_KEY')}` }
       });
       if (vapiRes.ok) {
         const vapiCall = await vapiRes.json();
         if (vapiCall.artifact?.presignedMonoUrl) {
-          // 2. Download the audio file directly from Vapi
           const audioRes = await fetch(vapiCall.artifact.presignedMonoUrl);
           if (audioRes.ok) {
             const audioBlob = await audioRes.blob();
             const fileName = `${callId}.wav`;
             
-            // 3. Upload to our own Supabase Storage bucket
             const uploadRes = await fetch(`${SUPABASE_URL}/storage/v1/object/recordings/${fileName}`, {
               method: 'POST',
               headers: {
@@ -184,8 +219,7 @@ async function logEndOfCallReport(message: any) {
               body: audioBlob
             });
             
-            if (uploadRes.ok || uploadRes.status === 400 /* duplicate */) {
-              // 4. Override the broken Vapi recordingUrl with our own public URL
+            if (uploadRes.ok || uploadRes.status === 400) {
               recordingUrl = `${SUPABASE_URL}/storage/v1/object/public/recordings/${fileName}`;
             }
           }
@@ -196,16 +230,13 @@ async function logEndOfCallReport(message: any) {
     }
   }
 
-  // Extract metadata (useful for Web SDK calls where phone is null)
   const metadata = message.call?.metadata || {};
   const orderId = metadata.order_id || null;
   let customerId = metadata.customer_id || null;
 
-  // If it's a real phone call (we have a phone number but no customerId), look up the customer!
   if (phone && !customerId) {
     try {
-      // Normalize Vapi's +234 format to match the local 080 format stored in the customers table
-      let localPhone = phone.replace(/\D/g, ''); // strip non-digits
+      let localPhone = phone.replace(/\D/g, '');
       if (localPhone.startsWith('234')) {
         localPhone = '0' + localPhone.slice(3);
       }
@@ -271,7 +302,6 @@ Deno.serve(async (req: Request) => {
     const body = await req.json();
     const type = body.message?.type;
     
-    // Vapi sends "tool-calls" when the AI wants to use a function
     if (type === 'tool-calls') {
       const toolCalls = body.message.toolWithToolCallList || [];
       const results = [];
@@ -308,7 +338,6 @@ Deno.serve(async (req: Request) => {
       return Response.json({ success: true }, { status: 200, headers: CORS });
     }
 
-    // Default return for other events (like 'status-update')
     return Response.json({ success: true }, { status: 200, headers: CORS });
 
   } catch (err: any) {
@@ -316,7 +345,3 @@ Deno.serve(async (req: Request) => {
     return Response.json({ error: err.message }, { status: 500, headers: CORS });
   }
 });
-
-
-
-
