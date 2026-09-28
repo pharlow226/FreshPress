@@ -425,6 +425,7 @@ Deno.serve(async (req: Request) => {
             messages_count:   (conversationHistory.length || 0) + 2,
             last_intent:      'security_deflection',
             requires_human:   false,
+            ai_summary:       `[SECURITY ALERT] Prompt injection / jailbreak attempt detected ("${message.slice(0, 80)}...")`,
           }),
         }),
         fetch(`${SUPABASE_URL}/rest/v1/chat_messages`, {
@@ -599,7 +600,7 @@ Now respond.`;
     const requiresHuman  = parsed.requires_human ?? false;
     let   suggestedActions: any[] = Array.isArray(parsed.suggested_actions) ? parsed.suggested_actions : [];
 
-    // 🔥 NEW: DECOUPLED ARCHITECTURE EXECUTION 🔥
+    // NEW: DECOUPLED ARCHITECTURE EXECUTION
     if (parsed.create_order_payload) {
       try {
         const payload = parsed.create_order_payload;
@@ -614,7 +615,7 @@ Now respond.`;
         if (createRes.ok) {
           const orderData = await createRes.json();
           parsed.created_order_id = orderData.orderId; // Save for telemetry
-          reply += `\n\n🎉 Perfect! Your order has been created successfully. Your Order ID is **${orderData.orderId}**. Our team will arrive on ${orderData.pickupDate}.`;
+          reply += `\n\nPerfect! Your order has been created successfully. Your Order ID is **${orderData.orderId}**. Our team will arrive on ${orderData.pickupDate}.`;
         } else {
           reply += `\n\nI apologize, but I encountered an error saving your order. Please reach out on WhatsApp.`;
         }
