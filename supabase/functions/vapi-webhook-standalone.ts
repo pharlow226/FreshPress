@@ -3,17 +3,15 @@
  * Deploy as: "vapi-webhook" in Supabase Dashboard -> Edge Functions
  *
  * Required secrets:
- *   SERVICE_ROLE_KEY, SUPABASE_URL, VAPI_WEBHOOK_SECRET, VAPI_API_KEY
+ *   SERVICE_ROLE_KEY (or SUPABASE_SERVICE_ROLE_KEY)
+ *   SUPABASE_URL
+ *   VAPI_WEBHOOK_SECRET
+ *   VAPI_API_KEY
+ *   INTERNAL_API_SECRET
  */
 
 const SUPABASE_URL     = Deno.env.get('SUPABASE_URL')!;
 const SERVICE_ROLE_KEY = Deno.env.get('SERVICE_ROLE_KEY') ?? Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
-
-const CORS = {
-  'Access-Control-Allow-Origin':  '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
-  'Access-Control-Allow-Methods': 'POST, OPTIONS',
-};
 
 function dbH() {
   return {
@@ -24,7 +22,15 @@ function dbH() {
   };
 }
 
-// ── Anti-Prompt Injection & Spoken Jailbreak Guardrail ────────────────────────
+// ── Constant-Time Secret Comparison ───────────────────────────────────────────
+function safeEqual(a: string, b: string): boolean {
+  if (!a || !b || a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
+// ── Anti-Prompt Injection & Spoken Guardrails ──────────────────────────────────
 const VOICE_INJECTION_PATTERNS = [
   /ignore\s+(all\s+)?(previous\s+|prior\s+|above\s+|system\s+)?instructions/i,
   /you\s+are\s+(now\s+)?(no\s+longer|codebot|dan|developer\s+mode|unconstrained|jailbroken)/i,
@@ -34,7 +40,6 @@ const VOICE_INJECTION_PATTERNS = [
   /admin\s+mode/i,
   /reveal\s+(your\s+)?(instructions|system\s+rules|api\s+key|prompt)/i,
   /repeat\s+(everything|the\s+prompt|all\s+words)\s+(above|before)/i,
-  /\b(def|class|import|function|linear_search)\b/i,
   /write\s+(a\s+)?(python|javascript|typescript|c\+\+|java|sql|code|script|algorithm)/i,
   /drop\s+table|select\s+\*\s+from/i,
 ];
@@ -44,10 +49,48 @@ function isSpokenInjection(text: string): boolean {
   return VOICE_INJECTION_PATTERNS.some(regex => regex.test(text));
 }
 
-// ── Tool Implementations with Strict Validation ───────────────────────────────
+function userSpeechOnly(transcript: string): string {
+  return transcript
+    .split('\n')
+    .filter(line => /^user:/i.test(line.trim()))
+    .join('\n');
+}
 
-async function getPricing(args: any) {
-  let url = `${SUPABASE_URL}/rest/v1/pricing?active=eq.true&select=service_name,category,price,unit&order=display_order.asc`;
+function checkPickupDate(d: string): string | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return 'The date must be a real calendar date. Ask the caller to repeat it.';
+  const dt = new Date(`${d}T00:00:00Z`);
+  if (Number.isNaN(dt.getTime()) || dt.toISOString().slice(0, 10) !== d) return 'That is not a valid calendar date.';
+  const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Africa/Lagos' });
+  if (d < today) return 'That date is in the past. Ask for today or a later date.';
+  if (dt.getUTCDay() === 0) return 'We are closed on Sundays. Ask for Monday to Saturday.';
+  const max = new Date(Date.now() + 60 * 24 * 3600 * 1000).toISOString().slice(0, 10);
+  if (d > max) return 'Pickups can only be booked up to sixty days ahead.';
+  return null;
+}
+
+// ── Vapi API Summary Helper ──────────────────────────────────────────────────
+async function fetchVapiCall(callId: string) {
+  const r = await fetch(`https://api.vapi.ai/call/${callId}`, {
+    headers: { 'Authorization': `Bearer ${Deno.env.get('VAPI_API_KEY')}` }
+  });
+  return r.ok ? await r.json() : null;
+}
+
+async function getSummaryWithRetry(callId: string, initial: string): Promise<string> {
+  if (initial) return initial;
+  for (let i = 0; i < 4; i++) {
+    const call = await fetchVapiCall(callId);
+    const s = call?.analysis?.summary || call?.summary || '';
+    if (s) return s;
+    await new Promise(r => setTimeout(r, 8000));
+  }
+  return '';
+}
+
+// ── Tool Implementations ──────────────────────────────────────────────────────
+
+async function getPricing(_args: any) {
+  const url = `${SUPABASE_URL}/rest/v1/pricing?active=eq.true&select=service_name,category,price,unit&order=display_order.asc`;
   const res = await fetch(url, { headers: dbH() });
   if (!res.ok) return "Pricing data is temporarily unavailable.";
   const rows = await res.json();
@@ -67,7 +110,7 @@ async function getPricing(args: any) {
   return resultStr;
 }
 
-async function getCompanyInfo(args: any) {
+async function getCompanyInfo(_args: any) {
   const res = await fetch(`${SUPABASE_URL}/rest/v1/company_info?select=*&limit=1`, { headers: dbH() });
   if (!res.ok) return "Company information is temporarily unavailable.";
   const rows = await res.json();
@@ -82,7 +125,6 @@ async function getCompanyInfo(args: any) {
   if (c.company_phone) info += `- Phone/WhatsApp: ${c.company_phone}\n`;
   if (c.company_email) info += `- Email: ${c.company_email}\n`;
   
-  // Fix TTS pronunciation for common Nigerian banks
   let bankName = c.bank_name || 'Bank';
   if (bankName.toLowerCase().includes('opay')) {
     bankName = 'Oh-Pay';
@@ -100,9 +142,8 @@ async function getCompanyInfo(args: any) {
 async function checkOrderStatus(args: any) {
   const rawId = (args.order_id || '').toString().trim();
   
-  // Security guardrail: Check for prompt injection in tool parameter
   if (isSpokenInjection(rawId)) {
-    console.warn(`[SECURITY ALERT: VOICE_INJECTION_PARAM] Invalid order status parameter: "${rawId}"`);
+    console.warn('[SECURITY ALERT: VOICE_INJECTION_PARAM] Blocked invalid order status query');
     return "I can only check valid FreshPress order numbers. Please provide a standard Order ID like LAU-123456.";
   }
 
@@ -129,50 +170,88 @@ async function checkOrderStatus(args: any) {
 
 async function createPickupOrder(args: any) {
   const { customer_name, phone, email, address, pickup_date, pickup_time_slot } = args;
-  
-  // Security guardrail: Check if any argument contains injection payloads
-  const combinedArgs = `${customer_name || ''} ${phone || ''} ${email || ''} ${address || ''} ${pickup_date || ''}`;
-  if (isSpokenInjection(combinedArgs)) {
-    console.warn(`[SECURITY ALERT: VOICE_INJECTION_PARAM] Invalid order creation payload: "${combinedArgs}"`);
-    return "I could not process the booking because the information provided contains invalid terms. Please state your full name and pickup address clearly.";
-  }
 
   if (!customer_name || !phone || !email || !address || !pickup_date || !pickup_time_slot) {
     return "Missing required fields. Need customer name, phone number, email address, pickup address, date, and time slot.";
   }
 
-  let validTimeSlot = 'morning';
-  const slotLower = (pickup_time_slot || '').toLowerCase();
-  
-  if (slotLower.includes('afternoon') || slotLower.match(/12pm|1pm|2pm|3pm|12:00|13:00|14:00|15:00/)) {
-    validTimeSlot = 'afternoon';
-  } else if (slotLower.includes('evening') || slotLower.match(/4pm|5pm|6pm|7pm|16:00|17:00|18:00|19:00/)) {
-    validTimeSlot = 'evening';
+  const combinedArgs = `${customer_name} ${phone} ${email} ${address} ${pickup_date}`;
+  if (isSpokenInjection(combinedArgs)) {
+    console.warn('[SECURITY ALERT: VOICE_INJECTION_PARAM] Blocked order payload');
+    return "I could not process the booking because the information provided contains invalid terms. Please state your full name and pickup address clearly.";
   }
 
-  const res = await fetch(`${SUPABASE_URL}/functions/v1/create-order`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      customer_name: String(customer_name).slice(0, 100),
-      email: String(email).toLowerCase().replace(/\s/g, '').slice(0, 100),
-      phone: String(phone).slice(0, 25),
-      address: String(address).slice(0, 250),
-      pickup_date,
-      pickup_time_slot: validTimeSlot,
-      special_instructions: "Created via Voice AI Assistant",
-      source: 'phone'
-    })
-  });
+  const cleanName    = String(customer_name).trim().slice(0, 100);
+  const cleanPhone   = String(phone).trim().slice(0, 25);
+  const cleanEmail   = String(email).toLowerCase().replace(/\s/g, '').slice(0, 100);
+  const cleanAddress = String(address).trim().slice(0, 250);
+
+  const phoneDigits = cleanPhone.replace(/\D/g, '');
+  if (phoneDigits.length < 10 || phoneDigits.length > 15) {
+    return "The phone number looks incomplete. Ask the caller to repeat it digit by digit.";
+  }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(cleanEmail)) {
+    return "The email address looks invalid. Ask the caller to spell it out using words.";
+  }
+  const dateProblem = checkPickupDate(String(pickup_date));
+  if (dateProblem) return dateProblem;
+
+  const slotLower = String(pickup_time_slot).toLowerCase();
+  let validTimeSlot: string | null = null;
+  if (slotLower.includes('morning') || /9am|10am|11am|09:00|10:00|11:00/.test(slotLower)) validTimeSlot = 'morning';
+  else if (slotLower.includes('afternoon') || /12pm|1pm|2pm|3pm|12:00|13:00|14:00|15:00/.test(slotLower)) validTimeSlot = 'afternoon';
+  else if (slotLower.includes('evening') || /4pm|5pm|6pm|7pm|16:00|17:00|18:00|19:00/.test(slotLower)) validTimeSlot = 'evening';
+  if (!validTimeSlot) return "I did not catch a valid time slot. Ask the caller to choose morning, afternoon, or evening.";
+
+  // Duplicate guard: same phone, date and slot in the last 10 minutes
+  const since = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+  const dupRes = await fetch(
+    `${SUPABASE_URL}/rest/v1/orders?phone=eq.${encodeURIComponent(cleanPhone)}&pickup_date=eq.${pickup_date}&pickup_time_slot=eq.${validTimeSlot}&created_at=gte.${encodeURIComponent(since)}&select=order_id&limit=1`,
+    { headers: dbH() }
+  );
+  if (dupRes.ok) {
+    const dup = await dupRes.json();
+    if (dup.length > 0) {
+      return `An order for this caller already exists. The Order ID is ${dup[0].order_id}. Read it out and do not create another.`;
+    }
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15000);
+  let res: Response;
+  try {
+    res = await fetch(`${SUPABASE_URL}/functions/v1/create-order`, {
+      method: 'POST',
+      signal: controller.signal,
+      headers: {
+        'Content-Type': 'application/json',
+        'x-internal-secret': Deno.env.get('INTERNAL_API_SECRET') ?? '',
+      },
+      body: JSON.stringify({
+        customer_name: cleanName,
+        email: cleanEmail,
+        phone: cleanPhone,
+        address: cleanAddress,
+        pickup_date,
+        pickup_time_slot: validTimeSlot,
+        special_instructions: "Created via Voice AI Assistant",
+        source: 'phone'
+      })
+    });
+  } catch (_e) {
+    console.error('create-order call failed or timed out');
+    return "The booking system is slow right now. Ask the caller to try again in a minute or use the website.";
+  } finally {
+    clearTimeout(timer);
+  }
 
   if (!res.ok) {
     console.error("Order creation failed", await res.text());
     return "Failed to create order due to a system error. Please instruct the caller to use the website at fresh-press-chi.vercel.app or reach us on WhatsApp.";
   }
-  
+
   const data = await res.json();
-  const orderId = data.orderId || `an order`;
-  
+  const orderId = data.orderId || 'an order';
   return `Order successfully created! The Order ID is ${orderId}. Inform the customer that our team will arrive on ${pickup_date} during the ${validTimeSlot} slot.`;
 }
 
@@ -183,12 +262,14 @@ async function logEndOfCallReport(message: any) {
   const phone = message.call?.customer?.number || message.call?.phoneCallProviderDetails?.from || null;
   const transcript = message.transcript || '';
   
-  let summary = message.analysis?.summary || message.call?.analysis?.summary || message.summary || '';
+  // Security Guardrail: Scan voice transcript for spoken prompt injection on caller lines only
+  const injectionDetected = isSpokenInjection(userSpeechOnly(transcript));
   
-  // Security Guardrail: Scan voice transcript for spoken prompt injection
-  const injectionDetected = isSpokenInjection(transcript);
+  let initialSummary = message.analysis?.summary || message.call?.analysis?.summary || message.summary || '';
+  let summary = await getSummaryWithRetry(callId, initialSummary);
+
   if (injectionDetected) {
-    console.warn(`[SECURITY ALERT: VOICE_INJECTION] Spoken injection detected in call ${callId} from ${phone}`);
+    console.warn(`[SECURITY ALERT: VOICE_INJECTION] Spoken injection detected in call ${callId}`);
     summary = `[SECURITY ALERT: SPOKEN INJECTION ATTEMPT DETECTED] ${summary}`;
   }
 
@@ -199,34 +280,30 @@ async function logEndOfCallReport(message: any) {
 
   if (recordingUrl && callId) {
     try {
-      const vapiRes = await fetch(`https://api.vapi.ai/call/${callId}`, {
-        headers: { 'Authorization': `Bearer ${Deno.env.get('VAPI_API_KEY')}` }
-      });
-      if (vapiRes.ok) {
-        const vapiCall = await vapiRes.json();
-        if (vapiCall.artifact?.presignedMonoUrl) {
-          const audioRes = await fetch(vapiCall.artifact.presignedMonoUrl);
-          if (audioRes.ok) {
-            const audioBlob = await audioRes.blob();
-            const fileName = `${callId}.wav`;
-            
-            const uploadRes = await fetch(`${SUPABASE_URL}/storage/v1/object/recordings/${fileName}`, {
-              method: 'POST',
-              headers: {
-                'Authorization': `Bearer ${SERVICE_ROLE_KEY}`,
-                'Content-Type': 'audio/wav',
-              },
-              body: audioBlob
-            });
-            
-            if (uploadRes.ok || uploadRes.status === 400) {
-              recordingUrl = `${SUPABASE_URL}/storage/v1/object/public/recordings/${fileName}`;
-            }
+      const vapiCall = await fetchVapiCall(callId);
+      if (vapiCall?.artifact?.presignedMonoUrl) {
+        const audioRes = await fetch(vapiCall.artifact.presignedMonoUrl);
+        if (audioRes.ok) {
+          const audioBlob = await audioRes.blob();
+          const fileName = `${callId}.wav`;
+          
+          const uploadRes = await fetch(`${SUPABASE_URL}/storage/v1/object/recordings/${fileName}`, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${SERVICE_ROLE_KEY}`,
+              'Content-Type': 'audio/wav',
+              'x-upsert': 'true',
+            },
+            body: audioBlob
+          });
+          
+          if (uploadRes.ok) {
+            recordingUrl = fileName;
           }
         }
       }
     } catch (e) {
-      console.warn("[vapi-webhook] Failed to secure audio file", e);
+      console.warn("[vapi-webhook] Failed to upload audio file:", e);
     }
   }
 
@@ -241,7 +318,7 @@ async function logEndOfCallReport(message: any) {
         localPhone = '0' + localPhone.slice(3);
       }
 
-      const res = await fetch(`${SUPABASE_URL}/rest/v1/customers?phone=eq.${localPhone}&select=id&limit=1`, {
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/customers?phone=eq.${encodeURIComponent(localPhone)}&select=id&limit=1`, {
         headers: dbH()
       });
       if (res.ok) {
@@ -251,7 +328,7 @@ async function logEndOfCallReport(message: any) {
         }
       }
     } catch (e) {
-      console.warn("Failed to lookup customer by phone", e);
+      console.warn("[vapi-webhook] Customer lookup error:", e);
     }
   }
 
@@ -289,13 +366,15 @@ async function logEndOfCallReport(message: any) {
 // ── Main Webhook Handler ──────────────────────────────────────────────────────
 
 Deno.serve(async (req: Request) => {
-  if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS });
-  if (req.method !== 'POST') return Response.json({ error: 'Method not allowed' }, { status: 405, headers: CORS });
+  if (req.method !== 'POST') {
+    return Response.json({ error: 'Method not allowed' }, { status: 405 });
+  }
 
-  const secret = req.headers.get("x-vapi-secret");
-  if (secret !== Deno.env.get('VAPI_WEBHOOK_SECRET')) {
-    console.error("Unauthorized request blocked!");
-    return Response.json({ error: 'Unauthorized' }, { status: 401, headers: CORS });
+  const secret = req.headers.get("x-vapi-secret") ?? '';
+  const expectedSecret = Deno.env.get('VAPI_WEBHOOK_SECRET') ?? '';
+
+  if (!safeEqual(secret, expectedSecret)) {
+    return Response.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   try {
@@ -309,8 +388,10 @@ Deno.serve(async (req: Request) => {
       for (const item of toolCalls) {
         const toolCallId = item.toolCall.id;
         const functionName = item.toolCall.function.name;
-        let args = {};
-        try { args = JSON.parse(item.toolCall.function.arguments || '{}'); } catch(e) {}
+        
+        const raw = item.toolCall.function.arguments;
+        let args: any = {};
+        try { args = typeof raw === 'string' ? JSON.parse(raw || '{}') : (raw ?? {}); } catch (_e) {}
         
         let resultData = "";
         
@@ -332,16 +413,19 @@ Deno.serve(async (req: Request) => {
         });
       }
 
-      return Response.json({ results }, { status: 200, headers: CORS });
+      return Response.json({ results }, { status: 200 });
     } else if (type === 'end-of-call-report') {
-      await logEndOfCallReport(body.message);
-      return Response.json({ success: true }, { status: 200, headers: CORS });
+      const job = logEndOfCallReport(body.message).catch(e => console.error(e));
+      // @ts-ignore EdgeRuntime is provided by Supabase
+      if (typeof EdgeRuntime !== 'undefined' && EdgeRuntime.waitUntil) EdgeRuntime.waitUntil(job);
+      else await job;
+      return Response.json({ success: true }, { status: 200 });
     }
 
-    return Response.json({ success: true }, { status: 200, headers: CORS });
+    return Response.json({ success: true }, { status: 200 });
 
   } catch (err: any) {
     console.error('[vapi-webhook] error:', err);
-    return Response.json({ error: err.message }, { status: 500, headers: CORS });
+    return Response.json({ error: 'Internal error' }, { status: 500 });
   }
 });
