@@ -24,12 +24,15 @@ interface ElevenLabsQuota {
   tier: string;
 }
 
-function toStoragePath(value: string): string {
-  if (!value) return '';
-  const marker = '/recordings/';
-  const i = value.indexOf(marker);
-  const path = i >= 0 ? value.slice(i + marker.length) : value;
-  return path.split('?')[0];
+function toStoragePath(value: string, callId?: string): string {
+  if (!value && !callId) return '';
+  if (value) {
+    const marker = '/recordings/';
+    const i = value.indexOf(marker);
+    if (i >= 0) return value.slice(i + marker.length).split('?')[0];
+    if (!value.startsWith('http')) return value.split('?')[0];
+  }
+  return callId ? `${callId}.wav` : '';
 }
 
 export function RecordingPlayer({ recording, callId }: { recording: string; callId: string }) {
@@ -40,8 +43,8 @@ export function RecordingPlayer({ recording, callId }: { recording: string; call
 
   useEffect(() => {
     let cancelled = false;
-    const path = toStoragePath(recording);
-    if (!path) {
+    const path = toStoragePath(recording, callId);
+    if (!path && !recording) {
       setPlayUrl(null);
       return;
     }
@@ -52,13 +55,18 @@ export function RecordingPlayer({ recording, callId }: { recording: string; call
     (async () => {
       try {
         const bucket = supabase.storage.from('recordings');
-        const play = await bucket.createSignedUrl(path, 3600);
-        const dl = await bucket.createSignedUrl(path, 3600, { download: `call-${callId}.wav` });
+        let play = await bucket.createSignedUrl(path, 3600);
+        let dl = await bucket.createSignedUrl(path, 3600, { download: `call-${callId}.wav` });
+
+        if ((play.error || !play.data?.signedUrl) && callId && path !== `${callId}.wav`) {
+          play = await bucket.createSignedUrl(`${callId}.wav`, 3600);
+          dl = await bucket.createSignedUrl(`${callId}.wav`, 3600, { download: `call-${callId}.wav` });
+        }
         
         if (cancelled) return;
         
         if (play.error || !play.data?.signedUrl) {
-          if (recording.startsWith('http')) {
+          if (recording && recording.startsWith('http') && !recording.includes('.r2.cloudflarestorage.com')) {
             setPlayUrl(recording);
             setDownloadUrl(recording);
           } else {
@@ -71,7 +79,7 @@ export function RecordingPlayer({ recording, callId }: { recording: string; call
         setDownloadUrl(dl.data?.signedUrl || play.data.signedUrl);
       } catch {
         if (!cancelled) {
-          if (recording.startsWith('http')) {
+          if (recording && recording.startsWith('http') && !recording.includes('.r2.cloudflarestorage.com')) {
             setPlayUrl(recording);
             setDownloadUrl(recording);
           } else {
