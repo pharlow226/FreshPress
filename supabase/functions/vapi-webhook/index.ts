@@ -382,6 +382,40 @@ Deno.serve(async (req: Request) => {
     return Response.json({ error: 'Method not allowed' }, { status: 405 });
   }
 
+  const authHeader = req.headers.get("authorization") ?? req.headers.get("Authorization") ?? '';
+  const serviceKey = Deno.env.get('SERVICE_ROLE_KEY') ?? Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
+  const isServiceRole = (authHeader && serviceKey && authHeader.includes(serviceKey));
+
+  const internalSecret = req.headers.get("x-internal-secret") ?? '';
+  const expectedInternal = Deno.env.get('INTERNAL_API_SECRET') ?? '';
+  const isInternalSecret = (internalSecret && expectedInternal && internalSecret === expectedInternal);
+
+  // Internal Management API for pushing config changes to Vapi using server secret
+  if (isServiceRole || isInternalSecret) {
+    try {
+      const body = await req.json();
+      if (body.action === 'sync_vapi_assistant') {
+        const assistantId = body.assistant_id || "4fea51b0-d6b7-4e9a-8a4a-8cb59ad6cc1b";
+        const vapiKey = Deno.env.get('VAPI_API_KEY');
+        if (!vapiKey) {
+          return Response.json({ error: 'VAPI_API_KEY secret not found on server' }, { status: 500 });
+        }
+        const patchRes = await fetch(`https://api.vapi.ai/assistant/${assistantId}`, {
+          method: 'PATCH',
+          headers: {
+            'Authorization': `Bearer ${vapiKey}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(body.patch_payload)
+        });
+        const patchData = await patchRes.json();
+        return Response.json({ success: patchRes.ok, status: patchRes.status, data: patchData }, { status: patchRes.status });
+      }
+    } catch (e: any) {
+      return Response.json({ error: e.message }, { status: 500 });
+    }
+  }
+
   const secret = req.headers.get("x-vapi-secret") ?? '';
   const expectedSecret = Deno.env.get('VAPI_WEBHOOK_SECRET') ?? '';
 
