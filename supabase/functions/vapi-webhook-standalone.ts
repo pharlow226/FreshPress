@@ -1,5 +1,5 @@
 /**
- * vapi-webhook-standalone.ts
+ * vapi-webhook.ts
  * Deploy as: "vapi-webhook" in Supabase Dashboard -> Edge Functions
  *
  * Required secrets:
@@ -89,24 +89,36 @@ async function getSummaryWithRetry(callId: string, initial: string): Promise<str
 
 // ── Tool Implementations ──────────────────────────────────────────────────────
 
-async function getPricing(_args: any) {
-  const url = `${SUPABASE_URL}/rest/v1/pricing?active=eq.true&select=service_name,category,price,unit&order=display_order.asc`;
-  const res = await fetch(url, { headers: dbH() });
-  if (!res.ok) return "Pricing data is temporarily unavailable.";
-  const rows = await res.json();
+async function getPricing(args: any) {
+  const [pricingRes, companyRes] = await Promise.allSettled([
+    fetch(`${SUPABASE_URL}/rest/v1/pricing?active=eq.true&select=service_name,category,price,unit&order=display_order.asc`, { headers: dbH() }),
+    fetch(`${SUPABASE_URL}/rest/v1/company_info?select=minimum_order&limit=1`, { headers: dbH() })
+  ]);
+
+  if (pricingRes.status !== 'fulfilled' || !pricingRes.value.ok) return "Pricing data is temporarily unavailable.";
+  const rows = await pricingRes.value.json();
   if (rows.length === 0) return "No pricing data found.";
-  
+
+  let minOrder = '2,000';
+  if (companyRes.status === 'fulfilled' && companyRes.value.ok) {
+    const compRows = await companyRes.value.json();
+    if (compRows.length > 0 && compRows[0].minimum_order != null) {
+      minOrder = Number(compRows[0].minimum_order).toLocaleString();
+    }
+  }
+
   const cats: Record<string, string[]> = {};
   for (const r of rows) {
     const cat = r.category || 'Other';
     if (!cats[cat]) cats[cat] = [];
     cats[cat].push(`${r.service_name}: ${r.price} Naira${r.unit ? ' per ' + r.unit : ''}`);
   }
-  
+
   let resultStr = "Live Pricing Data:\n";
   for (const [cat, items] of Object.entries(cats)) {
     resultStr += `${cat}:\n- ${items.join('\n- ')}\n\n`;
   }
+  resultStr += `Minimum Order: ${minOrder} Naira (required for free doorstep pickup and delivery across Lagos).`;
   return resultStr;
 }
 
@@ -120,7 +132,7 @@ async function getCompanyInfo(_args: any) {
   let info = `FreshPress Laundry Information:\n`;
   const lagosTime = new Date().toLocaleString("en-NG", { timeZone: "Africa/Lagos", dateStyle: "full", timeStyle: "short" });
   info += `- Current Live Date & Time: ${lagosTime}\n`;
-  if (c.minimum_order) info += `- Minimum Order: ${c.minimum_order} Naira\n`;
+  if (c.minimum_order) info += `- Minimum Order: ${Number(c.minimum_order).toLocaleString()} Naira (required for free doorstep pickup and delivery across Lagos)\n`;
   if (c.company_address) info += `- Address: ${c.company_address}\n`;
   if (c.company_phone) info += `- Phone/WhatsApp: ${c.company_phone}\n`;
   if (c.company_email) info += `- Email: ${c.company_email}\n`;
