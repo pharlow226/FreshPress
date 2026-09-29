@@ -293,8 +293,11 @@ You are Pressy, FreshPress Laundry's friendly AI assistant. FreshPress is a prem
 - Immediately adapt your response to their new service choice. NEVER mention, repeat, or carry over obsolete services from prior turns (e.g. do NOT say "I see you want to iron..." when the latest message is about washing).
 - Treat each turn with fresh active listening while retaining confirmed customer profile details (like customer name, phone number, address).
 
+**CUSTOMER NAME PERSONALIZATION & GREETING:**
+- If the customer's name is known from previous messages, history, or summary (e.g. "Faloye Samuel"), ALWAYS start your response with a personalized greeting: "Hi [Customer Name]," (e.g. "Hi Faloye Samuel,").
+
 **NIGERIAN PIDGIN & COLLOQUIAL INTENT TRANSLATOR:**
-Customers frequently speak in Nigerian Pidgin or informal Nigerian English. You MUST translate and understand their intent accurately:
+- Customers frequently speak in Nigerian Pidgin or informal Nigerian English. You MUST translate and understand their intent accurately:
 - "i wan wash" / "wan wash" / "help me wash" / "i need washing" / "wash my clothes" = Customer wants Laundry / Washing service (Wash & Iron or Wash & Fold).
 - "i wan iron" / "wan iron" / "just iron" / "iron only" = Customer wants Ironing Only service.
 - "i wan dry clean" / "dry clean" / "clean my suit" = Customer wants Dry Cleaning service.
@@ -308,10 +311,11 @@ Customers frequently speak in Nigerian Pidgin or informal Nigerian English. You 
 **BUDGET & MINIMUM ORDER GUIDANCE (CONCISE & DIRECT):**
 - Our minimum order for free doorstep pickup and delivery across Lagos is ${minOrder}.
 - When a customer mentions a budget or small quantity below the ${minOrder} threshold (for example, having 1,000 Naira budget when minimum is 2,000 Naira):
+  - Always greet the customer by name if known (e.g., "Hi Faloye Samuel,").
   - Keep your response short, direct, and conversational (maximum 2 to 3 sentences).
   - DO NOT dump long unrequested bullet price lists or lengthy essays.
   - Clearly state that the minimum order is ${minOrder} for pickup, suggest adding 1 or 2 more items to meet the requirement, and ask how they would like to proceed.
-  - Example shape: "To place a pickup order, our minimum amount is ₦2,000 (with free pickup and delivery). Since your current budget is ₦1,000, you would need to add 1 or 2 more items to meet the minimum order requirement. Please let me know how you would like to proceed!"
+  - Example shape: "Hi {customer_name}, to place a pickup order, our minimum amount is ₦2,000 for free pickup and delivery. Since your current budget is ₦1,000, you would need to add 1 or 2 more items to meet the minimum order requirement. Please let me know how you would like to proceed!"
 
 **ORDER COLLECTION STATE MACHINE:**
 If the user wants to place an order, you MUST collect these 6 pieces of information sequentially: Full Name, Phone Number, Email Address, Pickup Address, Pickup Date, and Time Slot (morning/afternoon/evening).
@@ -579,6 +583,32 @@ Deno.serve(async (req: Request) => {
       .filter((m: any) => m.role === 'user' || m.role === 'assistant')
       .slice(-6);
 
+    // Extract known customer name from orderRow, previousSummary, or conversation history
+    let knownCustomerName: string | null = orderRow?.customer_name || null;
+    if (!knownCustomerName && previousSummary) {
+      const nameMatch = previousSummary.match(/(?:customer(?:\s+name)?|user|name)\s*(?:is|:)\s*([A-Za-z\s]+?)(?:,|\.|\n|$)/i);
+      if (nameMatch && !/unknown|none|null/i.test(nameMatch[1])) {
+        knownCustomerName = nameMatch[1].trim();
+      }
+    }
+    if (!knownCustomerName) {
+      for (const m of [...chatHistory, ...conversationHistory]) {
+        if (m.role === 'assistant') {
+          const match = (m.content || '').match(/^Hi\s+([A-Za-z\s]{2,30}?)(?:,|\!|\n)/i);
+          if (match && !/there|customer|valued|friend|all/i.test(match[1])) {
+            knownCustomerName = match[1].trim();
+            break;
+          }
+        } else if (m.role === 'user') {
+          const match = (m.content || '').match(/(?:my name is|i am|name na|call me)\s+([A-Za-z\s]{2,30})/i);
+          if (match) {
+            knownCustomerName = match[1].trim();
+            break;
+          }
+        }
+      }
+    }
+
     // ── Step 7 — Call LLM ───────────────────────────────────────────────────
     const minOrderVal = Array.isArray(companyRows) && companyRows[0]?.minimum_order != null 
       ? `${Number(companyRows[0].minimum_order).toLocaleString()} Naira` 
@@ -591,6 +621,7 @@ ${message}
 
 ## SESSION CONTEXT
 Session ID: ${sessionId}
+Customer Name: ${knownCustomerName ? `${knownCustomerName} (CRITICAL: Always start your reply with "Hi ${knownCustomerName},")` : 'Not provided yet'}
 Detected Intent: ${detectedIntent}
 Message Count: ${messageCount}
 
@@ -613,7 +644,8 @@ ${JSON.stringify(last6, null, 2)}
 1. FOCUS ON LATEST MESSAGE: Base your answer directly on the USER'S LATEST MESSAGE above. If the customer shifted services or topics (e.g., they asked about "ironing" earlier, but now say "i wan wash" or state a budget), IMMEDIATELY switch to their new request (washing). NEVER carry over or repeat outdated services from previous turns.
 2. PIDGIN & COLLOQUIAL TRANSLATION: Interpret Nigerian Pidgin accurately ("i wan wash" = wants washing/laundry service, "1k" = 1,000 Naira budget, "2k" = 2,000 Naira, "two five" = 2,500 Naira).
 3. CONCISE BUDGET GUIDANCE: If the customer mentions a budget below the minimum order of ${minOrderVal}, keep your response short and direct (2-3 sentences max). State that the minimum order is ${minOrderVal} for pickup & delivery, explain that adding 1-2 more items will meet the threshold, and ask how they would like to proceed. DO NOT dump bulleted price lists unless asked.
-4. ZERO EMOJIS: Never use emojis in any part of the reply.
+4. GREET BY NAME: ${knownCustomerName ? `The customer's name is "${knownCustomerName}". You MUST start your response with "Hi ${knownCustomerName}," (e.g., "Hi ${knownCustomerName}, to place a pickup order...").` : 'If the customer introduces their name, greet them warmly by name.'}
+5. ZERO EMOJIS: Never use emojis in any part of the reply.
 
 ## RESPONSE FORMAT (strict JSON only, no markdown wrapper):
 {
@@ -629,28 +661,69 @@ ${JSON.stringify(last6, null, 2)}
 
 Now respond.`;
 
-    const openaiRes = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-      method:  'POST',
-      headers: {
-        'Content-Type':  'application/json',
-        'Authorization': `Bearer ${OPENAI_KEY}`,
-        'HTTP-Referer': SITE_URL,
-        'X-Title': 'FreshPress Chatbot',
-      },
-      body: JSON.stringify({
-        model:      'openai/gpt-4o-mini',
-        max_tokens: 1024,
-        messages: [
-          { role: 'system', content: getSystemPrompt(Array.isArray(companyRows) ? companyRows[0] : companyRows) },
-          { role: 'user',   content: userPrompt    },
-        ],
-      }),
-    });
+    const openrouterKey = Deno.env.get('OPENROUTER_API_KEY');
+    const openaiKey = Deno.env.get('OPENAI_API_KEY');
+
+    let openaiRes: Response;
+    if (openrouterKey) {
+      openaiRes = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        method:  'POST',
+        headers: {
+          'Content-Type':  'application/json',
+          'Authorization': `Bearer ${openrouterKey}`,
+          'HTTP-Referer': SITE_URL,
+          'X-Title': 'FreshPress Chatbot',
+        },
+        body: JSON.stringify({
+          model:      'openai/gpt-4o-mini',
+          max_tokens: 1024,
+          messages: [
+            { role: 'system', content: getSystemPrompt(Array.isArray(companyRows) ? companyRows[0] : companyRows) },
+            { role: 'user',   content: userPrompt    },
+          ],
+        }),
+      });
+
+      if (!openaiRes.ok && openaiKey) {
+        console.warn('[chat-assistant] OpenRouter failed, falling back to direct OpenAI API');
+        openaiRes = await fetch('https://api.openai.com/v1/chat/completions', {
+          method:  'POST',
+          headers: {
+            'Content-Type':  'application/json',
+            'Authorization': `Bearer ${openaiKey}`,
+          },
+          body: JSON.stringify({
+            model:      'gpt-4o-mini',
+            max_tokens: 1024,
+            messages: [
+              { role: 'system', content: getSystemPrompt(Array.isArray(companyRows) ? companyRows[0] : companyRows) },
+              { role: 'user',   content: userPrompt    },
+            ],
+          }),
+        });
+      }
+    } else {
+      openaiRes = await fetch('https://api.openai.com/v1/chat/completions', {
+        method:  'POST',
+        headers: {
+          'Content-Type':  'application/json',
+          'Authorization': `Bearer ${openaiKey}`,
+        },
+        body: JSON.stringify({
+          model:      'gpt-4o-mini',
+          max_tokens: 1024,
+          messages: [
+            { role: 'system', content: getSystemPrompt(Array.isArray(companyRows) ? companyRows[0] : companyRows) },
+            { role: 'user',   content: userPrompt    },
+          ],
+        }),
+      });
+    }
 
     if (!openaiRes.ok) {
       const err = await openaiRes.text();
-      console.error('[chat-assistant] OpenAI error:', err);
-      return Response.json({ ...errorReply(now) }, { status: 200, headers: CORS });
+      console.error('[chat-assistant] LLM error:', err);
+      return Response.json(errorReply(now), { status: 200, headers: CORS });
     }
 
     const openaiData = await openaiRes.json();
