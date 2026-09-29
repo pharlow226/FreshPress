@@ -99,19 +99,30 @@ async function getPricing(args: any) {
   const rows = await pricingRes.value.json();
   if (rows.length === 0) return "No pricing data found.";
 
-  let minOrder = '2,000';
+  let minOrderNum = 2000;
   if (companyRes.status === 'fulfilled' && companyRes.value.ok) {
     const compRows = await companyRes.value.json();
     if (compRows.length > 0 && compRows[0].minimum_order != null) {
-      minOrder = Number(compRows[0].minimum_order).toLocaleString();
+      minOrderNum = Number(compRows[0].minimum_order);
     }
   }
+  const minOrder = minOrderNum.toLocaleString();
 
   const cats: Record<string, string[]> = {};
   for (const r of rows) {
     const cat = r.category || 'Other';
     if (!cats[cat]) cats[cat] = [];
-    cats[cat].push(`${r.service_name}: ${r.price} Naira${r.unit ? ' per ' + r.unit : ''}`);
+    const price = Number(r.price);
+    const isPerKg = r.unit && /kg|kilo/i.test(r.unit);
+    let note = '';
+    if (!isPerKg && !isNaN(price)) {
+      note = price >= minOrderNum
+        ? 'meets the minimum order on its own'
+        : `is ${(minOrderNum - price).toLocaleString()} Naira below the minimum order`;
+    }
+    const unitStr = r.unit ? ' per ' + r.unit : '';
+    const noteStr = note ? ` (${note})` : '';
+    cats[cat].push(`${r.service_name}: ${r.price} Naira${unitStr}${noteStr}`);
   }
 
   let resultStr = "Live Pricing Data:\n";
@@ -274,6 +285,50 @@ async function createPickupOrder(args: any) {
   return `Order successfully created! The Order ID is ${orderId}. Inform the customer that our team will arrive on ${pickup_date} during the ${validTimeSlot} slot.`;
 }
 
+async function saveVapiRecording(callId: string, initialUrl: string): Promise<string> {
+  const fileName = `${callId}.wav`;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    try {
+      const vapiCall = await fetchVapiCall(callId);
+      const candidates = [
+        vapiCall?.artifact?.presignedMonoUrl,
+        vapiCall?.artifact?.presignedRecordingUrl,
+        vapiCall?.artifact?.stereoRecordingUrl,
+        vapiCall?.artifact?.recordingUrl,
+        initialUrl
+      ].filter(Boolean);
+
+      for (const url of candidates) {
+        if (!url || typeof url !== 'string' || !url.startsWith('http')) continue;
+        try {
+          const audioRes = await fetch(url);
+          if (audioRes.ok) {
+            const audioBlob = await audioRes.blob();
+            if (audioBlob.size > 100) {
+              const uploadRes = await fetch(`${SUPABASE_URL}/storage/v1/object/recordings/${fileName}`, {
+                method: 'POST',
+                headers: {
+                  'Authorization': `Bearer ${SERVICE_ROLE_KEY}`,
+                  'Content-Type': 'audio/wav',
+                  'x-upsert': 'true',
+                },
+                body: audioBlob
+              });
+              if (uploadRes.ok) {
+                return fileName;
+              }
+            }
+          }
+        } catch (_e) {}
+      }
+    } catch (e) {
+      console.warn(`[vapi-webhook] Recording fetch attempt ${attempt + 1} error:`, e);
+    }
+    if (attempt < 3) await new Promise(r => setTimeout(r, 6000));
+  }
+  return initialUrl || '';
+}
+
 async function logEndOfCallReport(message: any) {
   const callId = message.call?.id;
   if (!callId) return;
@@ -292,39 +347,11 @@ async function logEndOfCallReport(message: any) {
     summary = `[SECURITY ALERT: SPOKEN INJECTION ATTEMPT DETECTED] ${summary}`;
   }
 
-  let recordingUrl = message.recordingUrl || '';
+  const rawRecordingUrl = message.recordingUrl || message.artifact?.recordingUrl || message.call?.artifact?.recordingUrl || '';
+  const recordingUrl = await saveVapiRecording(callId, rawRecordingUrl);
   const endedReason = message.endedReason || '';
   const durationSeconds = message.durationSeconds || message.call?.duration || 0;
   const cost = message.cost || 0;
-
-  if (recordingUrl && callId) {
-    try {
-      const vapiCall = await fetchVapiCall(callId);
-      if (vapiCall?.artifact?.presignedMonoUrl) {
-        const audioRes = await fetch(vapiCall.artifact.presignedMonoUrl);
-        if (audioRes.ok) {
-          const audioBlob = await audioRes.blob();
-          const fileName = `${callId}.wav`;
-          
-          const uploadRes = await fetch(`${SUPABASE_URL}/storage/v1/object/recordings/${fileName}`, {
-            method: 'POST',
-            headers: {
-              'Authorization': `Bearer ${SERVICE_ROLE_KEY}`,
-              'Content-Type': 'audio/wav',
-              'x-upsert': 'true',
-            },
-            body: audioBlob
-          });
-          
-          if (uploadRes.ok) {
-            recordingUrl = fileName;
-          }
-        }
-      }
-    } catch (e) {
-      console.warn("[vapi-webhook] Failed to upload audio file:", e);
-    }
-  }
 
   const metadata = message.call?.metadata || {};
   const orderId = metadata.order_id || null;
