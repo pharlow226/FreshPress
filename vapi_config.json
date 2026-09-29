@@ -21,7 +21,7 @@
     "useSpeakerBoost": true
   },
   "createdAt": "2026-06-01T08:04:37.710Z",
-  "updatedAt": "2026-09-25T00:59:49.627Z",
+  "updatedAt": "2026-09-29T00:09:08.330Z",
   "model": {
     "model": "gpt-4o",
     "toolIds": [
@@ -45,7 +45,6 @@
   "transcriber": {
     "model": "nova-2",
     "keywords": [
-      "LAU:2",
       "Pressy:2",
       "FreshPress:2",
       "Naira:2",
@@ -56,7 +55,8 @@
       "suit",
       "bedsheet",
       "polo",
-      "polos"
+      "polos",
+      "LAU:2"
     ],
     "language": "en",
     "provider": "deepgram",
@@ -77,8 +77,10 @@
     "status-update",
     "tool-calls"
   ],
+  "serverUrl": "https://pofiytkpduprbkmgunbg.supabase.co/functions/v1/vapi-webhook",
   "maxDurationSeconds": 600,
   "summaryPrompt": "Write a highly detailed, chronological summary of the call for QA and Telemetry purposes.\nDo not write a generic 'happy path' summary. You MUST explicitly document the following:\n1. The user's initial intent vs. how the AI initially interpreted it.\n2. Any friction, misunderstandings, or AI UX failures.\n3. Any Speech-to-Text misquotes or slang the user used.\n4. The final resolution of the call.\nFormat the summary with brutal honesty so the engineering team can identify exactly where the conversational flow broke down.",
+  "firstMessageMode": "assistant-speaks-first",
   "analysisPlan": {
     "summaryPlan": {
       "enabled": true,
@@ -115,7 +117,6 @@
     "pciEnabled": false,
     "zdrEnabled": false
   },
-  "firstMessageMode": "assistant-speaks-first",
-  "latestVersion": "v96",
+  "latestVersion": "v98",
   "isServerUrlSecretSet": true
 }
