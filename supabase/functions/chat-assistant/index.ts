@@ -81,7 +81,7 @@ function extractOrderId(msg: string): string | null {
 
 // ── Anti-Prompt Injection & Jailbreak Guardrail ───────────────────────────────
 const INJECTION_PATTERNS = [
-  /ignore\s+(all\s+)?(previous\s+|prior\s+|above\s+|system\s+)?instructions/i,
+  /(ignore|disregard|forget|bypass|override)\s+(all\s+)?(the\s+)?(previous\s+|prior\s+|above\s+|system\s+|earlier\s+)?instructions/i,
   /you\s+are\s+(now\s+)?(no\s+longer|codebot|dan|developer\s+mode|unconstrained|jailbroken)/i,
   /system\s+prompt/i,
   /system\s+override/i,
@@ -477,7 +477,7 @@ Deno.serve(async (req: Request) => {
             messages_count:   (conversationHistory.length || 0) + 2,
             last_intent:      'security_deflection',
             requires_human:   false,
-            ai_summary:       `[SECURITY ALERT] Prompt injection attempt deflected`,
+            ai_summary:       `[SECURITY ALERT] Prompt injection attempt deflected: "${message.slice(0, 70)}${message.length > 70 ? '...' : ''}"`,
           }),
         }),
         fetch(`${SUPABASE_URL}/rest/v1/chat_messages`, {
