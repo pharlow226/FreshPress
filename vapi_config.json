@@ -38,7 +38,7 @@
     ],
     "provider": "openai"
   },
-  "firstMessage": "Hi there! Welcome to Fresh Press Laundry. I'm Pressy. I can help you with pricing, schedule a pickup, or check your order status. How can I help you today?",
+  "firstMessage": "Hi! Welcome to Fresh Press Laundry. This call is recorded for quality assurance. I'm Pressy\u2014how can I help you with pricing or scheduling a pickup today?",
   "voicemailMessage": "Hi, this is Pressy from Fresh Press Laundry. Sorry we missed you! Please call back anytime between 7AM and 8PM, Monday to Saturday, or reach us on WhatsApp at +234 811 314 3272.",
   "endCallFunctionEnabled": true,
   "endCallMessage": "Thank you for choosing Fresh Press! Have a wonderful day.",
