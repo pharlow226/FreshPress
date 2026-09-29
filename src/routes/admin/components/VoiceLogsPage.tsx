@@ -336,16 +336,16 @@ export function VoiceLogsPage() {
               <div className="space-y-2">
                 <div className="text-2xl font-black text-slate-900">
                   {elevenLabsQuota.character_count.toLocaleString()}
-                  <span className="text-sm font-normal text-slate-400"> / {elevenLabsQuota.character_limit.toLocaleString()}</span>
+                  <span className="text-sm font-normal text-slate-400"> / {elevenLabsQuota.character_limit.toLocaleString()} used</span>
                 </div>
                 <div className="w-full bg-slate-100 rounded-full h-2">
                   <div
                     className={`h-2 rounded-full transition-all ${quotaBarColor}`}
-                    style={{ width: `${Math.min(quotaPercent, 100)}%` }}
+                    style={{ width: `${Math.max(Math.min(quotaPercent, 100), 2)}%` }}
                   />
                 </div>
                 <p className="text-xs text-slate-500 font-medium">
-                  {quotaPercent}% used | ~{minsRemaining} min left | <span className="capitalize">{elevenLabsQuota.tier}</span>
+                  {charsRemaining.toLocaleString()} chars left (~{minsRemaining} min) | <span className="capitalize">{elevenLabsQuota.tier}</span>
                 </p>
               </div>
             ) : null}
