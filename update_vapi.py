@@ -154,10 +154,13 @@ with open('vapi_config.json', 'r', encoding='utf-8') as f:
 cfg['model']['messages'][0]['content'] = system_prompt
 cfg['firstMessage'] = "Hi! Welcome to Fresh Press Laundry. This call is recorded for quality assurance. I'm Pressy—how can I help you with pricing or scheduling a pickup today?"
 
-# Ensure Deepgram keywords have Fresh Press
+# Ensure Deepgram keywords have Fresh and Press
 keywords = cfg.get('transcriber', {}).get('keywords', [])
-if "Fresh Press:2" not in keywords and "Fresh Press:3" not in keywords:
-    keywords.insert(2, "Fresh Press:3")
+keywords = [k for k in keywords if "Fresh Press" not in k]
+if "Fresh:2" not in keywords:
+    keywords.insert(2, "Fresh:2")
+if "Press:2" not in keywords:
+    keywords.insert(3, "Press:2")
 cfg['transcriber']['keywords'] = keywords
 
 with open('vapi_config.json', 'w', encoding='utf-8') as f:
@@ -173,9 +176,11 @@ try:
         cfg2['model']['messages'][0]['content'] = system_prompt
     cfg2['firstMessage'] = "Hi! Welcome to Fresh Press Laundry. This call is recorded for quality assurance. I'm Pressy—how can I help you with pricing or scheduling a pickup today?"
     if 'transcriber' in cfg2 and 'keywords' in cfg2['transcriber']:
-        k2 = cfg2['transcriber']['keywords']
-        if "Fresh Press:2" not in k2 and "Fresh Press:3" not in k2:
-            k2.insert(2, "Fresh Press:3")
+        k2 = [k for k in cfg2['transcriber']['keywords'] if "Fresh Press" not in k]
+        if "Fresh:2" not in k2:
+            k2.insert(2, "Fresh:2")
+        if "Press:2" not in k2:
+            k2.insert(3, "Press:2")
         cfg2['transcriber']['keywords'] = k2
     with open('vapi_configuration.json', 'w', encoding='utf-8') as f:
         json.dump(cfg2, f, indent=2)
