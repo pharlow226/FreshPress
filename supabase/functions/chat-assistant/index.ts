@@ -13,7 +13,7 @@
  */
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
-const SERVICE_KEY  = Deno.env.get('SERVICE_ROLE_KEY') ?? Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
+const SERVICE_KEY  = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? Deno.env.get('SERVICE_ROLE_KEY');
 
 const OPENAI_KEY   = Deno.env.get('OPENROUTER_API_KEY') ?? Deno.env.get('OPENAI_API_KEY')!;
 const BREVO_KEY    = Deno.env.get('BREVO_API_KEY')      ?? '';
@@ -69,7 +69,7 @@ function detectIntent(msg: string): string {
   if (/deliver|area|location|cover|address|where una dey/i.test(m))  return 'delivery';
   if (/hour|open|time|when|una dey open/i.test(m))                  return 'hours';
   if (/cancel|refund|reschedule/i.test(m))                         return 'cancellation';
-  if (/pay|transfer|cash|bank|account/i.test(m))                   return 'payment';
+  if (/pay|transfer|cash|bank|account|opay|gtb|kuda|zenith|pos/i.test(m)) return 'payment';
   if (/service|dry.?clean|iron|wash|suit|duvet|bedsheet|native|t-shirt|shirt|trouser/i.test(m)) return 'services';
   return 'general';
 }
@@ -131,13 +131,19 @@ function buildPricingSummary(rows: any[]): string {
 
 // ── Company info builder ──────────────────────────────────────────────────────
 function buildCompanyInfo(row: any | null): string {
-  if (!row) return `WhatsApp: ${WHATSAPP} | Email: hello@freshpress.ng | Address: Lagos, Nigeria | Minimum Order: 3,000 Naira`;
+  if (!row) return `WhatsApp: ${WHATSAPP} | Email: hello@freshpress.ng | Address: Lagos, Nigeria | Minimum Order: 2,000 Naira | Bank Account: 8113143272 (OPay)`;
   const parts: string[] = [];
-  if (row.whatsapp || row.phone) parts.push(`WhatsApp: ${row.whatsapp || row.phone}`);
-  if (row.email)                 parts.push(`Email: ${row.email}`);
-  if (row.address)               parts.push(`Address: ${row.address}`);
-  if (row.minimum_order)         parts.push(`Minimum Order: ${Number(row.minimum_order).toLocaleString()} Naira`);
-  if (row.hours)                 parts.push(`Hours: ${row.hours}`);
+  if (row.company_phone || row.company_whatsapp || row.whatsapp || row.phone) parts.push(`WhatsApp: ${row.company_phone || row.company_whatsapp || row.whatsapp || row.phone}`);
+  if (row.company_email || row.email)                 parts.push(`Email: ${row.company_email || row.email}`);
+  if (row.company_address || row.address)             parts.push(`Address: ${row.company_address || row.address}`);
+  if (row.minimum_order)                              parts.push(`Minimum Order: ${Number(row.minimum_order).toLocaleString()} Naira`);
+  if (row.account_number) {
+    const bank = row.bank_name || 'Bank';
+    parts.push(`Bank Account: ${row.account_number} (${bank})`);
+  }
+  if (row.service_areas)                              parts.push(`Free Pickup Areas: ${row.service_areas}`);
+  parts.push(`Pickup Windows: Morning (9AM - 12PM), Afternoon (1PM - 4PM), Evening (4PM - 7PM)`);
+  if (row.working_hours || row.hours)                 parts.push(`Hours: ${row.working_hours || row.hours}`);
   return parts.length ? parts.join(' | ') : `WhatsApp: ${WHATSAPP} | Lagos, Nigeria`;
 }
 
@@ -262,7 +268,12 @@ function getSystemPrompt(companyRow: any | null): string {
   const minOrder = companyRow?.minimum_order != null 
     ? `${Number(companyRow.minimum_order).toLocaleString()} Naira` 
     : '2,000 Naira';
-  const whatsappNum = companyRow?.company_whatsapp || WHATSAPP;
+  const whatsappNum = companyRow?.company_whatsapp || companyRow?.company_phone || WHATSAPP;
+  const serviceAreas = companyRow?.service_areas || 'Abule Egba, Meiran, Ijaiye, Kola, Command, Iyana Ipaja, Ikeja';
+  const workingHours = companyRow?.working_hours || companyRow?.hours || 'Monday-Saturday 7AM-8PM, closed Sundays';
+  const storeAddress = companyRow?.company_address || companyRow?.address || 'Lagos, Nigeria';
+  const bankName = companyRow?.bank_name || 'Bank';
+  const accountNumber = companyRow?.account_number ? `${companyRow.account_number} (${bankName})` : 'Available on request';
 
   const currentTime = new Date().toLocaleString("en-NG", { timeZone: "Africa/Lagos", dateStyle: "full", timeStyle: "short" });
 
@@ -271,18 +282,21 @@ The current local date and time in Lagos is: ${currentTime}.
 Use this exact timestamp to understand relative time words like "tomorrow", "today", "yesterday", or "since morning" in the customer's chat history.
 
 You are Pressy, FreshPress Laundry's friendly AI assistant. FreshPress is a premium laundry service based in Lagos, Nigeria - fast, reliable, and eco-friendly.
-**Key rules:**
-- Always use LIVE PRICING DATA in the prompt - never guess prices
-- Always use ORDER TRACKING INFO for order status - never guess
+**Live Company Policies & Information:**
 - Minimum order: ${minOrder} (Required for free doorstep pickup and delivery across Lagos)
-- Hours: Monday-Saturday 7AM-8PM, closed Sundays
-- Free pickup and delivery within Lagos
+- Free Pickup Coverage Areas: ${serviceAreas}
+- Pickup Windows: Morning (9AM - 12PM), Afternoon (1PM - 4PM), Evening (4PM - 7PM) (Arrival windows)
+- Hours: ${workingHours}
+- Address: ${storeAddress}
+- Bank Details: ${accountNumber}
 - Turnaround: 24-48 hours
 - Payment: Bank transfer, cash on delivery, or POS
 - Order IDs: LAU-XXXXXX format
 - Pickup requests: ${SITE_URL}/request-pickup
 - Order tracking: ${SITE_URL}/track
-- When unsure: direct to WhatsApp ${whatsappNum}
+- WhatsApp Support: ${whatsappNum}
+- Always use LIVE PRICING DATA in the prompt - never guess prices
+- Always use ORDER TRACKING INFO for order status - never guess
 - Always be warm, clear, and professional
 - NEVER use email-style sign-offs like "Best regards" or "Sincerely". This is a real-time chat, keep it conversational.
 - Always respond with valid JSON only - no extra text before or after
@@ -308,14 +322,25 @@ You are Pressy, FreshPress Laundry's friendly AI assistant. FreshPress is a prem
 - "una fit come pick?" / "come carry am" / "come pick up" = Requesting pickup service.
 - "where una dey" / "which area una dey cover" = Delivery area / location inquiry.
 
+**PAYMENT & BANK TRANSFERS:**
+- If the customer asks how to pay, requests bank details, or mentions bank transfers, OPay, cash on delivery, or POS:
+  - Greet the customer by name if known (e.g., "Hi Faloye Samuel,").
+  - Provide the official bank name and account number from COMPANY CONTACT & POLICIES.
+  - State clearly that we accept Bank Transfer, Cash on Delivery, and POS payments.
+  - Ask if they would like to proceed with scheduling a pickup or have any questions.
+
+**AMBIGUOUS OR SHORT ONE-WORD INPUTS:**
+- If the customer sends a brief ambiguous word (e.g., "huh", "okay", "wait"), respond with a warm clarification (e.g., "How can I help you with your laundry today?").
+- PAYMENT WORDS ARE NEVER OUT-OF-SCOPE: Never trigger deflection for payment terms (e.g., "OPay", "transfer", "bank", "account").
+
 **BUDGET & MINIMUM ORDER GUIDANCE (CONCISE & DIRECT):**
 - Our minimum order for free doorstep pickup and delivery across Lagos is ${minOrder}.
-- When a customer mentions a budget or small quantity below the ${minOrder} threshold (for example, having 1,000 Naira budget when minimum is 2,000 Naira):
+- When a customer mentions a budget or small quantity below the ${minOrder} threshold:
   - Always greet the customer by name if known (e.g., "Hi Faloye Samuel,").
   - Keep your response short, direct, and conversational (maximum 2 to 3 sentences).
   - DO NOT dump long unrequested bullet price lists or lengthy essays.
   - Clearly state that the minimum order is ${minOrder} for pickup, suggest adding 1 or 2 more items to meet the requirement, and ask how they would like to proceed.
-  - Example shape: "Hi {customer_name}, to place a pickup order, our minimum amount is ₦2,000 for free pickup and delivery. Since your current budget is ₦1,000, you would need to add 1 or 2 more items to meet the minimum order requirement. Please let me know how you would like to proceed!"
+  - Example shape: "Hi {customer_name}, our minimum order for free doorstep pickup is ${minOrder}. Since your current budget is ₦1,000, you would just need to add 1 or 2 more items to meet the minimum requirement. How would you like to proceed?"
 
 **ORDER COLLECTION STATE MACHINE:**
 If the user wants to place an order, you MUST collect these 6 pieces of information sequentially: Full Name, Phone Number, Email Address, Pickup Address, Pickup Date, and Time Slot (morning/afternoon/evening).
@@ -645,7 +670,8 @@ ${JSON.stringify(last6, null, 2)}
 2. PIDGIN & COLLOQUIAL TRANSLATION: Interpret Nigerian Pidgin accurately ("i wan wash" = wants washing/laundry service, "1k" = 1,000 Naira budget, "2k" = 2,000 Naira, "two five" = 2,500 Naira).
 3. CONCISE BUDGET GUIDANCE: If the customer mentions a budget below the minimum order of ${minOrderVal}, keep your response short and direct (2-3 sentences max). State that the minimum order is ${minOrderVal} for pickup & delivery, explain that adding 1-2 more items will meet the threshold, and ask how they would like to proceed. DO NOT dump bulleted price lists unless asked.
 4. GREET BY NAME: ${knownCustomerName ? `The customer's name is "${knownCustomerName}". You MUST start your response with "Hi ${knownCustomerName}," (e.g., "Hi ${knownCustomerName}, to place a pickup order...").` : 'If the customer introduces their name, greet them warmly by name.'}
-5. ZERO EMOJIS: Never use emojis in any part of the reply.
+5. PAYMENT & BANK TRANSFERS: If the customer asks about payments, bank transfer, account number, or mentions OPay/cash/POS, provide the dynamic bank account details from COMPANY CONTACT & POLICIES and confirm payment methods.
+6. ZERO EMOJIS: Never use emojis in any part of the reply.
 
 ## RESPONSE FORMAT (strict JSON only, no markdown wrapper):
 {
@@ -664,28 +690,45 @@ Now respond.`;
     const openrouterKey = Deno.env.get('OPENROUTER_API_KEY');
     const openaiKey = Deno.env.get('OPENAI_API_KEY');
 
-    let openaiRes: Response;
-    if (openrouterKey) {
-      openaiRes = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-        method:  'POST',
-        headers: {
-          'Content-Type':  'application/json',
-          'Authorization': `Bearer ${openrouterKey}`,
-          'HTTP-Referer': SITE_URL,
-          'X-Title': 'FreshPress Chatbot',
-        },
-        body: JSON.stringify({
-          model:      'openai/gpt-4o-mini',
-          max_tokens: 1024,
-          messages: [
-            { role: 'system', content: getSystemPrompt(Array.isArray(companyRows) ? companyRows[0] : companyRows) },
-            { role: 'user',   content: userPrompt    },
-          ],
-        }),
-      });
+    let openaiRes: Response | null = null;
+    let rawText = '';
+    let openRouterErr = '';
+    let openAiErr = '';
 
-      if (!openaiRes.ok && openaiKey) {
-        console.warn('[chat-assistant] OpenRouter failed, falling back to direct OpenAI API');
+    if (openrouterKey) {
+      try {
+        openaiRes = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+          method:  'POST',
+          headers: {
+            'Content-Type':  'application/json',
+            'Authorization': `Bearer ${openrouterKey}`,
+            'HTTP-Referer': SITE_URL,
+            'X-Title': 'FreshPress Chatbot',
+          },
+          body: JSON.stringify({
+            model:      'openai/gpt-4o-mini',
+            max_tokens: 1024,
+            messages: [
+              { role: 'system', content: getSystemPrompt(Array.isArray(companyRows) ? companyRows[0] : companyRows) },
+              { role: 'user',   content: userPrompt    },
+            ],
+          }),
+        });
+
+        if (!openaiRes.ok) {
+          openRouterErr = `${openaiRes.status}: ${await openaiRes.text()}`;
+          console.warn('[chat-assistant] OpenRouter failed status:', openRouterErr);
+          openaiRes = null;
+        }
+      } catch (err: any) {
+        openRouterErr = `Exception: ${err?.message || String(err)}`;
+        console.warn('[chat-assistant] OpenRouter fetch error:', err);
+        openaiRes = null;
+      }
+    }
+
+    if (!openaiRes && openaiKey) {
+      try {
         openaiRes = await fetch('https://api.openai.com/v1/chat/completions', {
           method:  'POST',
           headers: {
@@ -701,33 +744,25 @@ Now respond.`;
             ],
           }),
         });
+        if (!openaiRes.ok) {
+          openAiErr = `${openaiRes.status}: ${await openaiRes.text()}`;
+          console.warn('[chat-assistant] Direct OpenAI failed status:', openAiErr);
+          openaiRes = null;
+        }
+      } catch (err: any) {
+        openAiErr = `Exception: ${err?.message || String(err)}`;
+        console.warn('[chat-assistant] Direct OpenAI fetch error:', err);
+        openaiRes = null;
       }
-    } else {
-      openaiRes = await fetch('https://api.openai.com/v1/chat/completions', {
-        method:  'POST',
-        headers: {
-          'Content-Type':  'application/json',
-          'Authorization': `Bearer ${openaiKey}`,
-        },
-        body: JSON.stringify({
-          model:      'gpt-4o-mini',
-          max_tokens: 1024,
-          messages: [
-            { role: 'system', content: getSystemPrompt(Array.isArray(companyRows) ? companyRows[0] : companyRows) },
-            { role: 'user',   content: userPrompt    },
-          ],
-        }),
-      });
     }
 
-    if (!openaiRes.ok) {
-      const err = await openaiRes.text();
-      console.error('[chat-assistant] LLM error:', err);
+    if (!openaiRes || !openaiRes.ok) {
+      console.error('[chat-assistant] All LLM providers failed.');
       return Response.json(errorReply(now), { status: 200, headers: CORS });
     }
 
     const openaiData = await openaiRes.json();
-    const rawText    = openaiData.choices?.[0]?.message?.content ?? '';
+    rawText = openaiData.choices?.[0]?.message?.content ?? '';
 
     // ── Step 8 — Parse AI response ──────────────────────────────────────────
     const parsed = parseAIResponse(rawText);

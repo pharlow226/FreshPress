@@ -11,7 +11,7 @@
  */
 
 const SUPABASE_URL     = Deno.env.get('SUPABASE_URL')!;
-const SERVICE_ROLE_KEY = Deno.env.get('SERVICE_ROLE_KEY') ?? Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? Deno.env.get('SERVICE_ROLE_KEY')!;
 
 function dbH() {
   return {
@@ -133,17 +133,24 @@ async function getCompanyInfo(_args: any) {
   const lagosTime = new Date().toLocaleString("en-NG", { timeZone: "Africa/Lagos", dateStyle: "full", timeStyle: "short" });
   info += `- Current Live Date & Time: ${lagosTime}\n`;
   if (c.minimum_order) info += `- Minimum Order: ${Number(c.minimum_order).toLocaleString()} Naira (required for free doorstep pickup and delivery across Lagos)\n`;
+  if (c.service_areas) info += `- Free Pickup Coverage Areas: ${c.service_areas}\n`;
+  info += `- Pickup Windows: Morning (9:00 AM to 12:00 PM), Afternoon (1:00 PM to 4:00 PM), Evening (4:00 PM to 7:00 PM). Note: These are arrival windows, not exact fixed minutes.\n`;
   if (c.company_address) info += `- Address: ${c.company_address}\n`;
   if (c.company_phone) info += `- Phone/WhatsApp: ${c.company_phone}\n`;
   if (c.company_email) info += `- Email: ${c.company_email}\n`;
   
   let bankName = c.bank_name || 'Bank';
-  if (bankName.toLowerCase().includes('opay')) {
+  const bnLower = bankName.toLowerCase();
+  if (bnLower.includes('opay')) {
     bankName = 'Oh-Pay';
-  } else if (bankName.toLowerCase().includes('gtb') || bankName.toLowerCase().includes('guaranty')) {
+  } else if (bnLower.includes('gtb') || bnLower.includes('guaranty')) {
     bankName = 'G T B';
-  } else if (bankName.toLowerCase().includes('fcmb')) {
+  } else if (bnLower.includes('fcmb')) {
     bankName = 'F C M B';
+  } else if (bnLower.includes('kuda')) {
+    bankName = 'Koo-dah Bank';
+  } else if (bnLower.includes('uba')) {
+    bankName = 'U B A';
   }
   
   if (c.account_number) info += `- Bank Account: ${c.account_number} (${bankName})\n`;
@@ -193,7 +200,7 @@ async function createPickupOrder(args: any) {
     return "I could not process the booking because the information provided contains invalid terms. Please state your full name and pickup address clearly.";
   }
 
-  const cleanName    = String(customer_name).trim().slice(0, 100);
+  const cleanName    = String(customer_name).replace(/-/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 100);
   const cleanPhone   = String(phone).trim().slice(0, 25);
   const cleanEmail   = String(email).toLowerCase().replace(/\s/g, '').slice(0, 100);
   const cleanAddress = String(address).trim().slice(0, 250);
@@ -208,11 +215,11 @@ async function createPickupOrder(args: any) {
   const dateProblem = checkPickupDate(String(pickup_date));
   if (dateProblem) return dateProblem;
 
-  const slotLower = String(pickup_time_slot).toLowerCase();
+  const slotLower = String(pickup_time_slot || '').toLowerCase().trim();
   let validTimeSlot: string | null = null;
-  if (slotLower.includes('morning') || /9am|10am|11am|09:00|10:00|11:00/.test(slotLower)) validTimeSlot = 'morning';
-  else if (slotLower.includes('afternoon') || /12pm|1pm|2pm|3pm|12:00|13:00|14:00|15:00/.test(slotLower)) validTimeSlot = 'afternoon';
-  else if (slotLower.includes('evening') || /4pm|5pm|6pm|7pm|16:00|17:00|18:00|19:00/.test(slotLower)) validTimeSlot = 'evening';
+  if (['morning', '9am', '10am', '11am', '09:00', '10:00', '11:00'].some(k => slotLower.includes(k))) validTimeSlot = 'morning';
+  else if (['afternoon', '12pm', '1pm', '2pm', '3pm', '12:00', '13:00', '14:00', '15:00'].some(k => slotLower.includes(k))) validTimeSlot = 'afternoon';
+  else if (['evening', '4pm', '5pm', '6pm', '7pm', '16:00', '17:00', '18:00', '19:00'].some(k => slotLower.includes(k))) validTimeSlot = 'evening';
   if (!validTimeSlot) return "I did not catch a valid time slot. Ask the caller to choose morning, afternoon, or evening.";
 
   // Duplicate guard: same phone, date and slot in the last 10 minutes
@@ -383,34 +390,39 @@ Deno.serve(async (req: Request) => {
   }
 
   const authHeader = req.headers.get("authorization") ?? req.headers.get("Authorization") ?? '';
-  const serviceKey = Deno.env.get('SERVICE_ROLE_KEY') ?? Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
-  const isServiceRole = (authHeader && serviceKey && authHeader.includes(serviceKey));
+  const key1 = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
+  const key2 = Deno.env.get('SERVICE_ROLE_KEY') ?? '';
+  const isServiceRole = Boolean((key1 && authHeader.includes(key1)) || (key2 && authHeader.includes(key2)));
 
   const internalSecret = req.headers.get("x-internal-secret") ?? '';
   const expectedInternal = Deno.env.get('INTERNAL_API_SECRET') ?? '';
-  const isInternalSecret = (internalSecret && expectedInternal && internalSecret === expectedInternal);
+  const isInternalSecret = Boolean(internalSecret && expectedInternal && internalSecret === expectedInternal);
+
+  let body: any = {};
+  try {
+    body = await req.json();
+  } catch (_e) {
+    return Response.json({ error: 'Invalid JSON body' }, { status: 400 });
+  }
 
   // Internal Management API for pushing config changes to Vapi using server secret
-  if (isServiceRole || isInternalSecret) {
+  if ((isServiceRole || isInternalSecret) && body.action === 'sync_vapi_assistant') {
     try {
-      const body = await req.json();
-      if (body.action === 'sync_vapi_assistant') {
-        const assistantId = body.assistant_id || "4fea51b0-d6b7-4e9a-8a4a-8cb59ad6cc1b";
-        const vapiKey = Deno.env.get('VAPI_API_KEY');
-        if (!vapiKey) {
-          return Response.json({ error: 'VAPI_API_KEY secret not found on server' }, { status: 500 });
-        }
-        const patchRes = await fetch(`https://api.vapi.ai/assistant/${assistantId}`, {
-          method: 'PATCH',
-          headers: {
-            'Authorization': `Bearer ${vapiKey}`,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify(body.patch_payload)
-        });
-        const patchData = await patchRes.json();
-        return Response.json({ success: patchRes.ok, status: patchRes.status, data: patchData }, { status: patchRes.status });
+      const assistantId = body.assistant_id || "4fea51b0-d6b7-4e9a-8a4a-8cb59ad6cc1b";
+      const vapiKey = Deno.env.get('VAPI_API_KEY');
+      if (!vapiKey) {
+        return Response.json({ error: 'VAPI_API_KEY secret not found on server' }, { status: 500 });
       }
+      const patchRes = await fetch(`https://api.vapi.ai/assistant/${assistantId}`, {
+        method: 'PATCH',
+        headers: {
+          'Authorization': `Bearer ${vapiKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(body.patch_payload)
+      });
+      const patchData = await patchRes.json();
+      return Response.json({ success: patchRes.ok, status: patchRes.status, data: patchData }, { status: patchRes.status });
     } catch (e: any) {
       return Response.json({ error: e.message }, { status: 500 });
     }
@@ -419,23 +431,23 @@ Deno.serve(async (req: Request) => {
   const secret = req.headers.get("x-vapi-secret") ?? '';
   const expectedSecret = Deno.env.get('VAPI_WEBHOOK_SECRET') ?? '';
 
-  if (!safeEqual(secret, expectedSecret)) {
+  if (!isServiceRole && !isInternalSecret && !safeEqual(secret, expectedSecret)) {
     return Response.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   try {
-    const body = await req.json();
     const type = body.message?.type;
     
     if (type === 'tool-calls') {
-      const toolCalls = body.message.toolWithToolCallList || [];
+      const rawList = body.message.toolWithToolCallList || body.message.toolCalls || body.message.toolCallList || [];
       const results = [];
 
-      for (const item of toolCalls) {
-        const toolCallId = item.toolCall.id;
-        const functionName = item.toolCall.function.name;
+      for (const item of rawList) {
+        const toolCallObj = item.toolCall || item;
+        const toolCallId = toolCallObj.id;
+        const functionName = toolCallObj.function?.name || toolCallObj.name;
         
-        const raw = item.toolCall.function.arguments;
+        const raw = toolCallObj.function?.arguments || toolCallObj.arguments;
         let args: any = {};
         try { args = typeof raw === 'string' ? JSON.parse(raw || '{}') : (raw ?? {}); } catch (_e) {}
         
