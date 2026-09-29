@@ -152,7 +152,7 @@ with open('vapi_config.json', 'r', encoding='utf-8') as f:
     cfg = json.load(f)
 
 cfg['model']['messages'][0]['content'] = system_prompt
-cfg['firstMessage'] = "Hi there! Welcome to Fresh Press Laundry. I'm Pressy. I can help you with pricing, schedule a pickup, or check your order status. How can I help you today?"
+cfg['firstMessage'] = "Hi! Welcome to Fresh Press Laundry. This call is recorded for quality assurance. I'm Pressy—how can I help you with pricing or scheduling a pickup today?"
 
 # Ensure Deepgram keywords have Fresh Press
 keywords = cfg.get('transcriber', {}).get('keywords', [])
@@ -171,7 +171,7 @@ try:
         cfg2['model']['systemPrompt'] = system_prompt
     elif 'messages' in cfg2.get('model', {}):
         cfg2['model']['messages'][0]['content'] = system_prompt
-    cfg2['firstMessage'] = "Hi there! Welcome to Fresh Press Laundry. I'm Pressy. I can help you with pricing, schedule a pickup, or check your order status. How can I help you today?"
+    cfg2['firstMessage'] = "Hi! Welcome to Fresh Press Laundry. This call is recorded for quality assurance. I'm Pressy—how can I help you with pricing or scheduling a pickup today?"
     if 'transcriber' in cfg2 and 'keywords' in cfg2['transcriber']:
         k2 = cfg2['transcriber']['keywords']
         if "Fresh Press:2" not in k2 and "Fresh Press:3" not in k2:
