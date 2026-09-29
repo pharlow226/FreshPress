@@ -32,7 +32,7 @@ function safeEqual(a: string, b: string): boolean {
 
 // ── Anti-Prompt Injection & Spoken Guardrails ──────────────────────────────────
 const VOICE_INJECTION_PATTERNS = [
-  /ignore\s+(all\s+)?(previous\s+|prior\s+|above\s+|system\s+)?instructions/i,
+  /(ignore|disregard|forget|bypass|override)\s+(all\s+)?(the\s+)?(previous\s+|prior\s+|above\s+|system\s+|earlier\s+)?instructions/i,
   /you\s+are\s+(now\s+)?(no\s+longer|codebot|dan|developer\s+mode|unconstrained|jailbroken)/i,
   /system\s+prompt/i,
   /system\s+override/i,
