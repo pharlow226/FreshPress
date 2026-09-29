@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { supabase } from '@/lib/supabase';
-import { MessageSquare, Clock, RefreshCw, FileText, AlertTriangle, ShieldAlert, ShieldCheck, Search } from 'lucide-react';
+import { MessageSquare, Clock, RefreshCw, FileText, Search } from 'lucide-react';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 
 interface ChatSession {
@@ -13,37 +13,6 @@ interface ChatSession {
   order_id: string | null;
   requires_human: boolean;
   ai_summary: string | null;
-}
-
-const INJECTION_PATTERNS = [
-  /ignore\s+(all\s+)?(previous\s+|prior\s+|above\s+|system\s+)?instructions/i,
-  /you\s+are\s+(now\s+)?(no\s+longer|codebot|dan|developer\s+mode|jailbroken)/i,
-  /system\s+prompt/i,
-  /reveal\s+(your\s+)?(instructions|system\s+rules|api\s+key|prompt)/i,
-  /repeat\s+(everything|the\s+prompt|all\s+words)\s+(above|before)/i,
-  /\b(def|class|import|function|linear_search)\s+[\w_]+\s*(\(|:)/i,
-  /<script[\s\S]*?>/i,
-  /act\s+as\s+(a\s+)?(developer|programmer|python\s+bot|software\s+engineer|hacker)/i,
-  /write\s+(a\s+)?(python|javascript|typescript|c\+\+|java|php|sql|bash|shell)\s+(code|script|algorithm|function|program)/i,
-  /base64\s*(decode|string|encoded)/i,
-];
-
-function isInjectionPayload(text: string): boolean {
-  if (!text) return false;
-  return INJECTION_PATTERNS.some(regex => regex.test(text));
-}
-
-function isSecuritySession(session: ChatSession): boolean {
-  const intent = (session.last_intent || '').toLowerCase();
-  const summary = (session.ai_summary || '').toLowerCase();
-  return (
-    intent === 'security_deflection' ||
-    intent.includes('injection') ||
-    intent.includes('jailbreak') ||
-    summary.includes('security') ||
-    summary.includes('injection') ||
-    summary.includes('jailbreak')
-  );
 }
 
 export function ChatLogsPage() {
@@ -121,22 +90,14 @@ export function ChatLogsPage() {
     );
   });
 
-  const securitySessionCount = sessions.filter(isSecuritySession).length;
-
   return (
     <div className="p-4 sm:p-8 max-w-7xl mx-auto space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div>
-          <h1 className="text-3xl font-black text-slate-900 tracking-tight flex items-center gap-3">
-            Chat Telemetry & Guardrails
-            {securitySessionCount > 0 && (
-              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-indigo-50 text-indigo-700 border border-indigo-200">
-                <ShieldAlert className="w-3.5 h-3.5 text-indigo-600" />
-                {securitySessionCount} Guardrail Interception{securitySessionCount > 1 ? 's' : ''}
-              </span>
-            )}
+          <h1 className="text-3xl font-black text-slate-900 tracking-tight">
+            Chat Telemetry & Logs
           </h1>
-          <p className="text-slate-500 mt-1">Monitor web chat sessions, AI telemetry summaries, guardrails, and human escalations.</p>
+          <p className="text-slate-500 mt-1">Monitor web chat sessions, AI conversation summaries, and user inquiries.</p>
         </div>
         <div className="flex items-center gap-3">
           <select 
@@ -169,13 +130,9 @@ export function ChatLogsPage() {
           </button>
           <button 
             onClick={() => setFilterType('security')}
-            className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 ${filterType === 'security' ? 'bg-indigo-50 text-indigo-700 shadow-sm border border-indigo-200' : 'text-slate-600 hover:bg-slate-50'}`}
+            className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all ${filterType === 'security' ? 'bg-indigo-50 text-indigo-700 shadow-sm border border-indigo-200' : 'text-slate-600 hover:bg-slate-50'}`}
           >
-            <ShieldAlert className="w-3.5 h-3.5 text-indigo-600" />
             Security Deflections
-            {securitySessionCount > 0 && (
-              <span className="ml-1 px-1.5 py-0.2 rounded-full text-[10px] bg-indigo-600 text-white font-bold">{securitySessionCount}</span>
-            )}
           </button>
           <button 
             onClick={() => setFilterType('escalated')}
@@ -218,82 +175,48 @@ export function ChatLogsPage() {
             ) : filteredSessions.length === 0 ? (
               <div className="text-center p-8 text-slate-400 text-sm">No sessions found matching filters.</div>
             ) : (
-              filteredSessions.map(session => {
-                const isSec = isSecuritySession(session);
-                return (
-                  <button
-                    key={session.id}
-                    onClick={() => handleSelectSession(session)}
-                    className={`w-full text-left p-4 rounded-xl border transition-all ${
-                      selectedSession?.id === session.id 
-                        ? 'bg-indigo-50 border-indigo-200 ring-1 ring-indigo-200'
-                        : 'bg-white border-slate-100 hover:border-slate-300 hover:shadow-sm'
-                    }`}
-                  >
-                    <div className="flex justify-between items-start mb-2">
-                      <div className="flex items-center gap-2">
-                        {isSec ? (
-                          <ShieldAlert className="w-4 h-4 text-indigo-600 flex-shrink-0" />
-                        ) : (
-                          <MessageSquare className={`w-4 h-4 flex-shrink-0 ${session.requires_human ? 'text-amber-500' : 'text-indigo-500'}`} />
-                        )}
-                        <span className="font-bold text-slate-900 text-sm">{session.session_id.substring(0, 14)}...</span>
-                      </div>
-                      
-                      <div className="flex flex-col items-end gap-1">
-                        {isSec && (
-                          <span className="px-2 py-0.5 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded text-[10px] font-semibold tracking-wider flex items-center gap-1">
-                            <ShieldAlert className="w-3 h-3 text-indigo-600" /> GUARDRAIL DEFLECTED
-                          </span>
-                        )}
-                        {session.requires_human && (
-                          <span className="px-2 py-0.5 bg-amber-100 text-amber-800 rounded text-[10px] font-bold">ESCALATED</span>
-                        )}
-                      </div>
+              filteredSessions.map(session => (
+                <button
+                  key={session.id}
+                  onClick={() => handleSelectSession(session)}
+                  className={`w-full text-left p-4 rounded-xl border transition-all ${
+                    selectedSession?.id === session.id 
+                      ? 'bg-indigo-50 border-indigo-200 ring-1 ring-indigo-200'
+                      : 'bg-white border-slate-100 hover:border-slate-300 hover:shadow-sm'
+                  }`}
+                >
+                  <div className="flex justify-between items-start mb-2">
+                    <div className="flex items-center gap-2">
+                      <MessageSquare className={`w-4 h-4 flex-shrink-0 ${session.requires_human ? 'text-amber-500' : 'text-indigo-500'}`} />
+                      <span className="font-bold text-slate-900 text-sm">{session.session_id.substring(0, 14)}...</span>
                     </div>
+                  </div>
 
-                    <div className="flex items-center gap-4 text-xs text-slate-500 mb-2">
-                      <span className="flex items-center gap-1"><Clock className="w-3 h-3" /> {new Date(session.last_activity_at).toLocaleDateString()}</span>
-                      <span>{session.messages_count} msgs</span>
-                    </div>
+                  <div className="flex items-center gap-4 text-xs text-slate-500 mb-2">
+                    <span className="flex items-center gap-1"><Clock className="w-3 h-3" /> {new Date(session.last_activity_at).toLocaleDateString()}</span>
+                    <span>{session.messages_count} msgs</span>
+                  </div>
 
-                    {session.last_intent && (
-                      <div className="text-[11px] px-2 py-0.5 rounded font-medium inline-block mb-2 bg-slate-100 text-slate-600">
-                        Intent: {session.last_intent}
-                      </div>
-                    )}
-
-                    {session.ai_summary && (
-                      <p className="text-xs line-clamp-2 text-slate-600">
-                        {session.ai_summary}
-                      </p>
-                    )}
-                  </button>
-                );
-              })
+                  {session.ai_summary && (
+                    <p className="text-xs line-clamp-2 text-slate-600">
+                      {session.ai_summary}
+                    </p>
+                  )}
+                </button>
+              ))
             )}
           </div>
         </div>
 
-        {/* Selected Session Transcript & Security Telemetry */}
+        {/* Selected Session Transcript */}
         <div className="lg:col-span-2 h-[700px] flex flex-col">
           {selectedSession ? (
             <Card className="flex-1 flex flex-col shadow-sm border-slate-200 h-full overflow-hidden">
               <CardHeader className="bg-slate-50/80 border-b pb-4 shrink-0">
                 <div className="flex justify-between items-start gap-4">
                   <div>
-                    <CardTitle className="text-lg flex flex-wrap items-center gap-2">
+                    <CardTitle className="text-lg flex flex-wrap items-center gap-2 text-slate-900">
                       <span>Session Details</span>
-                      {isSecuritySession(selectedSession) && (
-                        <span className="flex items-center gap-1 text-xs px-2.5 py-1 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-full font-semibold">
-                          <ShieldAlert className="w-3.5 h-3.5 text-indigo-600" /> GUARDRAIL DEFLECTED
-                        </span>
-                      )}
-                      {selectedSession.requires_human && (
-                        <span className="flex items-center gap-1 text-xs px-2 py-1 bg-amber-100 text-amber-800 rounded-full font-bold">
-                          <AlertTriangle className="w-3 h-3" /> HUMAN ESCALATION
-                        </span>
-                      )}
                     </CardTitle>
                     <p className="text-xs text-slate-500 font-mono mt-1 select-all">Session ID: {selectedSession.session_id}</p>
                   </div>
@@ -306,22 +229,9 @@ export function ChatLogsPage() {
               </CardHeader>
               
               <CardContent className="p-0 flex-1 flex flex-col min-h-0">
-                {/* Security Alert Banner if session was flagged */}
-                {isSecuritySession(selectedSession) && (
-                  <div className="p-4 bg-indigo-50/60 border-b border-indigo-100 shrink-0 flex items-start gap-3 text-slate-700">
-                    <ShieldAlert className="w-5 h-5 text-indigo-600 flex-shrink-0 mt-0.5" />
-                    <div className="text-xs leading-relaxed">
-                      <p className="font-bold text-slate-900">Security Guardrail Interception</p>
-                      <p className="text-slate-600 mt-0.5">
-                        The user in this session sent instructions that were safely intercepted by the Edge Security Guardrail and answered with a standard deflection.
-                      </p>
-                    </div>
-                  </div>
-                )}
-
-                <div className="p-4 bg-indigo-50/40 border-b shrink-0">
+                <div className="p-4 bg-slate-50/70 border-b shrink-0">
                   <h3 className="text-xs font-bold text-slate-700 flex items-center gap-1.5 mb-1.5">
-                    <FileText className="w-3.5 h-3.5 text-indigo-600" /> AI Telemetry & Guardrail Summary
+                    <FileText className="w-3.5 h-3.5 text-indigo-600" /> AI Session Summary
                   </h3>
                   <p className="text-xs text-slate-700 bg-white p-3 rounded-lg border shadow-sm leading-relaxed">
                     {selectedSession.ai_summary || "No automated summary captured for this session."}
@@ -329,7 +239,7 @@ export function ChatLogsPage() {
                 </div>
                 
                 {/* Transcript Message Stream */}
-                <div className="flex-1 overflow-y-auto p-6 space-y-4 bg-slate-50/70">
+                <div className="flex-1 overflow-y-auto p-6 space-y-4 bg-slate-50/50">
                   <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400 text-center mb-4 border-b border-slate-200 pb-2">
                     Conversation Transcript
                   </h3>
@@ -341,40 +251,18 @@ export function ChatLogsPage() {
                   ) : (
                     messages.map((msg, idx) => {
                       const isUser = msg.role === 'user';
-                      const isAttack = isUser && isInjectionPayload(msg.content);
-                      const isDeflectionReply = !isUser && (
-                        msg.content.includes('spin cycle') ||
-                        msg.content.includes('strictly limited') ||
-                        msg.content.includes('outside my laundry')
-                      );
 
                       return (
                         <div key={idx} className={`flex flex-col ${isUser ? 'items-end' : 'items-start'} mb-2`}>
-                          {isAttack && (
-                            <div className="flex items-center gap-1 text-[11px] font-medium text-slate-500 mb-1 px-1">
-                              <ShieldAlert className="w-3.5 h-3.5 text-indigo-600" />
-                              <span>Prompt Guardrail Intercepted</span>
-                            </div>
-                          )}
-
-                          {isDeflectionReply && (
-                            <div className="flex items-center gap-1 text-[11px] font-semibold text-emerald-700 mb-1 px-1">
-                              <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
-                              <span>Safely Deflected at Edge (0 Tokens)</span>
-                            </div>
-                          )}
-
                           <div className={`max-w-[85%] rounded-2xl px-4 py-3 shadow-sm ${
                             isUser 
                               ? 'bg-slate-800 text-white rounded-br-none' 
-                              : isDeflectionReply
-                                ? 'bg-indigo-50/70 border border-indigo-200 text-slate-800 rounded-bl-none'
-                                : 'bg-white border border-slate-200 text-slate-800 rounded-bl-none'
+                              : 'bg-white border border-slate-200 text-slate-800 rounded-bl-none'
                           }`}>
                             <p className="text-xs sm:text-sm whitespace-pre-wrap leading-relaxed font-normal">
                               {msg.content}
                             </p>
-                            <span className="text-[10px] mt-2 block text-slate-400">
+                            <span className={`text-[10px] mt-2 block ${isUser ? 'text-slate-400' : 'text-slate-400'}`}>
                               {new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                             </span>
                           </div>
@@ -389,7 +277,7 @@ export function ChatLogsPage() {
             <div className="flex-1 border rounded-xl bg-slate-50 border-dashed flex flex-col items-center justify-center text-slate-400 h-full p-6 text-center">
               <MessageSquare className="w-12 h-12 mb-3 text-slate-300" />
               <p className="text-sm font-medium text-slate-600">No session selected</p>
-              <p className="text-xs text-slate-400 mt-1">Select a chat session from the list to review transcript and security guardrails telemetry.</p>
+              <p className="text-xs text-slate-400 mt-1">Select a chat session from the list to review transcript.</p>
             </div>
           )}
         </div>
