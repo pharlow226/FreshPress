@@ -25,9 +25,16 @@ const WHATSAPP = '+2348113143272';
 
 const CORS = {
   'Access-Control-Allow-Origin':  '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-internal-secret',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 };
+
+function safeEqual(a: string, b: string): boolean {
+  if (!a || !b || a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
 
 function dbH(extra: Record<string, any> = {}): Record<string, string> {
   const headers: Record<string, string> = {
@@ -53,7 +60,7 @@ function dbH(extra: Record<string, any> = {}): Record<string, string> {
 // ── Error reply shape ─────────────────────────────────────────────────────────
 function errorReply(now: string) {
   return {
-    reply: `Sorry, I could not process your message. Please try again or reach us on WhatsApp at ${WHATSAPP}.`,
+    reply: `Sorry, our chat service is having a brief connection issue. Please try again or reach us on WhatsApp at ${WHATSAPP}.`,
     topic: 'error',
     suggested_actions: [{ label: 'WhatsApp Us', action: 'whatsapp', phone: WHATSAPP }],
     timestamp: now,
@@ -113,30 +120,64 @@ function getDeflectionReply(): string {
   return NATURAL_DEFLECTIONS[idx];
 }
 
-// ── Pricing summary builder ───────────────────────────────────────────────────
-function buildPricingSummary(rows: any[]): string {
+// ── Date and Slot Normalizers ────────────────────────────────────────────────
+function checkPickupDate(d: string): string | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return 'Please provide a valid calendar date in YYYY-MM-DD format.';
+  const dt = new Date(`${d}T00:00:00Z`);
+  if (Number.isNaN(dt.getTime()) || dt.toISOString().slice(0, 10) !== d) return 'That is not a valid calendar date.';
+  const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Africa/Lagos' });
+  if (d < today) return 'That date is in the past. Please select today or a future date.';
+  if (dt.getUTCDay() === 0) return 'We are closed on Sundays. Please select a pickup date from Monday to Saturday.';
+  const max = new Date(Date.now() + 60 * 24 * 3600 * 1000).toISOString().slice(0, 10);
+  if (d > max) return 'Pickups can only be scheduled up to 60 days in advance.';
+  return null;
+}
+
+function normalizeTimeSlot(slotStr: string): string | null {
+  const s = String(slotStr || '').toLowerCase().trim();
+  if (['morning', '9am', '10am', '11am', '12pm', '09:00', '10:00', '11:00', '12:00'].some(k => s.includes(k))) return 'morning';
+  if (['afternoon', '1pm', '2pm', '3pm', '13:00', '14:00', '15:00'].some(k => s.includes(k))) return 'afternoon';
+  if (['evening', '4pm', '5pm', '6pm', '7pm', '16:00', '17:00', '18:00', '19:00'].some(k => s.includes(k))) return 'evening';
+  return null;
+}
+
+// ── Pricing summary builder (Zero Fabricated Fallbacks) ────────────────────────
+function buildPricingSummary(rows: any[], minOrderNum: number | null): string {
   if (!rows || rows.length === 0) {
-    return `Pricing data temporarily unavailable. Please visit ${SITE_URL}/pricing or ask via WhatsApp: ${WHATSAPP}`;
+    return `Pricing data is temporarily unavailable. Please visit ${SITE_URL}/pricing or ask via WhatsApp: ${WHATSAPP}`;
   }
   const cats: Record<string, string[]> = {};
   for (const r of rows) {
     const cat = r.category || 'Other';
     if (!cats[cat]) cats[cat] = [];
-    const price = r.price != null ? `${Number(r.price).toLocaleString()} Naira` : 'POA';
-    const unit  = r.unit  ? ` per ${r.unit}` : '';
-    cats[cat].push(`  - ${r.service_name}: ${price}${unit}`);
+    const price = Number(r.price);
+    const isPerKg = r.unit && /kg|kilo/i.test(r.unit);
+    let note = '';
+    if (minOrderNum !== null && !isPerKg && !isNaN(price)) {
+      note = price >= minOrderNum
+        ? ' (meets the minimum order on its own)'
+        : ` (is ${(minOrderNum - price).toLocaleString()} Naira below the minimum order)`;
+    }
+    const unitStr = r.unit ? ` per ${r.unit}` : '';
+    cats[cat].push(`  - ${r.service_name}: ${price.toLocaleString()} Naira${unitStr}${note}`);
   }
-  return Object.entries(cats).map(([cat, lines]) => `${cat}:\n${lines.join('\n')}`).join('\n\n');
+  let summary = Object.entries(cats).map(([cat, lines]) => `${cat}:\n${lines.join('\n')}`).join('\n\n');
+  if (minOrderNum !== null) {
+    summary += `\n\nMinimum Order: ${minOrderNum.toLocaleString()} Naira (required for free doorstep pickup and delivery across Lagos)`;
+  } else {
+    summary += `\n\nMinimum Order: Not specified in live database. Advise customer to confirm with support on WhatsApp.`;
+  }
+  return summary;
 }
 
 // ── Company info builder ──────────────────────────────────────────────────────
 function buildCompanyInfo(row: any | null): string {
-  if (!row) return `WhatsApp: ${WHATSAPP} | Email: hello@freshpress.ng | Address: Lagos, Nigeria | Minimum Order: 2,000 Naira | Bank Account: 8113143272 (OPay)`;
+  if (!row) return `WhatsApp: ${WHATSAPP} | Lagos, Nigeria (Live company details temporarily offline)`;
   const parts: string[] = [];
   if (row.company_phone || row.company_whatsapp || row.whatsapp || row.phone) parts.push(`WhatsApp: ${row.company_phone || row.company_whatsapp || row.whatsapp || row.phone}`);
   if (row.company_email || row.email)                 parts.push(`Email: ${row.company_email || row.email}`);
   if (row.company_address || row.address)             parts.push(`Address: ${row.company_address || row.address}`);
-  if (row.minimum_order)                              parts.push(`Minimum Order: ${Number(row.minimum_order).toLocaleString()} Naira`);
+  if (row.minimum_order != null)                      parts.push(`Minimum Order: ${Number(row.minimum_order).toLocaleString()} Naira`);
   if (row.account_number) {
     const bank = row.bank_name || 'Bank';
     parts.push(`Bank Account: ${row.account_number} (${bank})`);
@@ -208,7 +249,7 @@ function buildOrderInfo(orderRow: any | null, orderId: string | null, fetchError
   if (fetchError) {
     return JSON.stringify({
       found: null, fetchError: true,
-      message: `Order lookup failed due to a connection issue. Direct customer to: ${SITE_URL}/track or WhatsApp: ${WHATSAPP}`,
+      message: `Order lookup failed due to a temporary connection issue. Direct customer to: ${SITE_URL}/track or WhatsApp: ${WHATSAPP}`,
     });
   }
   if (!orderRow) {
@@ -263,13 +304,13 @@ function buildOrderInfo(orderRow: any | null, orderId: string | null, fetchError
   });
 }
 
-// ── System prompt builder ─────────────────────────────────────────────────────
+// ── System prompt builder (Zero Fabricated Fallbacks) ─────────────────────────
 function getSystemPrompt(companyRow: any | null): string {
   const minOrder = companyRow?.minimum_order != null 
     ? `${Number(companyRow.minimum_order).toLocaleString()} Naira` 
-    : '2,000 Naira';
+    : null;
   const whatsappNum = companyRow?.company_whatsapp || companyRow?.company_phone || WHATSAPP;
-  const serviceAreas = companyRow?.service_areas || 'Abule Egba, Meiran, Ijaiye, Kola, Command, Iyana Ipaja, Ikeja';
+  const serviceAreas = companyRow?.service_areas || 'Lagos mainland and island coverage areas';
   const workingHours = companyRow?.working_hours || companyRow?.hours || 'Monday-Saturday 7AM-8PM, closed Sundays';
   const storeAddress = companyRow?.company_address || companyRow?.address || 'Lagos, Nigeria';
   const bankName = companyRow?.bank_name || 'Bank';
@@ -283,7 +324,7 @@ Use this exact timestamp to understand relative time words like "tomorrow", "tod
 
 You are Pressy, FreshPress Laundry's friendly AI assistant. FreshPress is a premium laundry service based in Lagos, Nigeria - fast, reliable, and eco-friendly.
 **Live Company Policies & Information:**
-- Minimum order: ${minOrder} (Required for free doorstep pickup and delivery across Lagos)
+${minOrder ? `- Minimum order: ${minOrder} (Required for free doorstep pickup and delivery across Lagos)` : '- Minimum order: Not configured. If customer asks, direct them to check with support via WhatsApp.'}
 - Free Pickup Coverage Areas: ${serviceAreas}
 - Pickup Windows: Morning (9AM - 12PM), Afternoon (1PM - 4PM), Evening (4PM - 7PM) (Arrival windows)
 - Hours: ${workingHours}
@@ -295,7 +336,7 @@ You are Pressy, FreshPress Laundry's friendly AI assistant. FreshPress is a prem
 - Pickup requests: ${SITE_URL}/request-pickup
 - Order tracking: ${SITE_URL}/track
 - WhatsApp Support: ${whatsappNum}
-- Always use LIVE PRICING DATA in the prompt - never guess prices
+- Always use LIVE PRICING DATA in the prompt - never guess or invent prices
 - Always use ORDER TRACKING INFO for order status - never guess
 - Always be warm, clear, and professional
 - NEVER use email-style sign-offs like "Best regards" or "Sincerely". This is a real-time chat, keep it conversational.
@@ -304,8 +345,8 @@ You are Pressy, FreshPress Laundry's friendly AI assistant. FreshPress is a prem
 **DYNAMIC INTENT & SERVICE SWITCHING (CRITICAL RULE):**
 - In a multi-turn conversation, ALWAYS prioritize the user's LATEST message to determine their active service request and intent.
 - Do NOT anchor to services or items discussed in earlier conversation turns. If earlier messages discussed "ironing" or "dry cleaning", but the customer's latest message says "i wan wash", "wash", "washing", or mentions laundry, they want WASHING/LAUNDRY service.
-- Immediately adapt your response to their new service choice. NEVER mention, repeat, or carry over obsolete services from prior turns (e.g. do NOT say "I see you want to iron..." when the latest message is about washing).
-- Treat each turn with fresh active listening while retaining confirmed customer profile details (like customer name, phone number, address).
+- Immediately adapt your response to their new service choice. NEVER mention, repeat, or carry over obsolete services from prior turns.
+- Treat each turn with fresh active listening while retaining confirmed customer profile details.
 
 **CUSTOMER NAME PERSONALIZATION & GREETING:**
 - If the customer's name is known from previous messages, history, or summary (e.g. "Faloye Samuel"), ALWAYS start your response with a personalized greeting: "Hi [Customer Name]," (e.g. "Hi Faloye Samuel,").
@@ -334,16 +375,15 @@ You are Pressy, FreshPress Laundry's friendly AI assistant. FreshPress is a prem
 - PAYMENT WORDS ARE NEVER OUT-OF-SCOPE: Never trigger deflection for payment terms (e.g., "OPay", "transfer", "bank", "account").
 
 **BUDGET & MINIMUM ORDER GUIDANCE (CONCISE & DIRECT):**
-- Our minimum order for free doorstep pickup and delivery across Lagos is ${minOrder}.
+${minOrder ? `- Our minimum order for free doorstep pickup and delivery across Lagos is ${minOrder}.
 - STRICT THRESHOLD RULE: 
-  - If an item's price or the customer's total meets or exceeds ${minOrder} (e.g., a Duvet at 2,500 Naira when minimum is 2,000 Naira), NEVER tell the customer to add more items! Instead, state the price and invite them to schedule a pickup.
-  - ONLY tell the customer to add more items when their item price or stated budget is STRICTLY BELOW ${minOrder} (e.g., a single T-shirt at 600 Naira).
+  - If an item's price or the customer's total meets or exceeds ${minOrder}, NEVER tell the customer to add more items! Instead, state the price and invite them to schedule a pickup.
+  - ONLY tell the customer to add more items when their item price or stated budget is STRICTLY BELOW ${minOrder}.
 - When a customer mentions a budget or item strictly below ${minOrder}:
   - Always greet the customer by name if known (e.g., "Hi Faloye Samuel,").
   - Keep your response short, direct, and conversational (maximum 2 to 3 sentences).
   - DO NOT dump long unrequested bullet price lists.
-  - Clearly state that the minimum order is ${minOrder} for pickup, suggest adding 1 or 2 more items to meet the requirement, and ask how they would like to proceed.
-  - Example shape: "Hi {customer_name}, our minimum order for free doorstep pickup is ${minOrder}. Since your current budget is ₦1,000, you would just need to add 1 or 2 more items to meet the minimum requirement. How would you like to proceed?"
+  - Clearly state that the minimum order is ${minOrder} for pickup, suggest adding 1 or 2 more items to meet the requirement, and ask how they would like to proceed.` : `- Do NOT guess or fabricate any minimum order amount. If the customer asks about minimum order, advise them to check with our team on WhatsApp.`}
 
 **ORDER COLLECTION STATE MACHINE:**
 If the user wants to place an order, you MUST collect these 6 pieces of information sequentially: Full Name, Phone Number, Email Address, Pickup Address, Pickup Date, and Time Slot (morning/afternoon/evening).
@@ -377,7 +417,7 @@ Need help? WhatsApp us: ${WHATSAPP}
 - If a customer asks for a "Duvet" without specifying the size, explicitly ask them if they mean "Duvet (Small)" or "Duvet (Large)", and quote both prices if available.
 - If a customer asks for a "Bedsheet", explicitly ask them if they mean "Bedsheet (Single)" or "Bedsheet (Double)".
 - If a customer asks a broad category (e.g., "shirt"), concisely list all matching variants from the LIVE PRICING DATA.
-- If the quoted item price is equal to or greater than ${minOrder}, do NOT ask them to add more items; smoothly invite them to schedule a pickup.
+- Never guess or fabricate prices. If an item is not found in LIVE PRICING DATA, tell the customer it is not listed and invite them to ask on WhatsApp.
 
 **General formatting rules:**
 - Never use emojis - plain text only, like a human would write
@@ -430,6 +470,7 @@ function sendBrevo(to: string, subject: string, html: string): void {
   if (!BREVO_KEY) return;
   fetch('https://api.brevo.com/v3/smtp/email', {
     method:  'POST',
+    signal: AbortSignal.timeout(6000),
     headers: { 'api-key': BREVO_KEY, 'Content-Type': 'application/json' },
     body: JSON.stringify({
       sender: { name: 'FreshPress AI', email: BREVO_SENDER },
@@ -466,7 +507,7 @@ Deno.serve(async (req: Request) => {
     try {
       const rateRes = await fetch(
         `${SUPABASE_URL}/rest/v1/chat_messages?session_id=eq.${encodeURIComponent(sessionId)}&created_at=gte.${encodeURIComponent(fiveMinAgo)}&select=id`,
-        { headers: { ...dbH(), 'Prefer': 'count=exact', 'Range': '0-0' } }
+        { headers: { ...dbH(), 'Prefer': 'count=exact', 'Range': '0-0' }, signal: AbortSignal.timeout(3000) }
       );
       if (rateRes.ok) {
         const total = parseInt(rateRes.headers.get('content-range')?.split('/')[1] || '0', 10);
@@ -498,7 +539,6 @@ Deno.serve(async (req: Request) => {
       console.warn(`[SECURITY ALERT: PROMPT_INJECTION] Deflected injection attempt in session ${sessionId}`);
       const deflectionReply = getDeflectionReply();
 
-      // Log attempt to database for security monitoring without hitting OpenAI
       const logJob = Promise.allSettled([
         fetch(`${SUPABASE_URL}/rest/v1/chat_sessions?on_conflict=session_id`, {
           method:  'POST',
@@ -543,14 +583,14 @@ Deno.serve(async (req: Request) => {
       }, { status: 200, headers: CORS });
     }
 
-    // ── Step 2 — Load chat history ──────────────────────────────────────────
+    // ── Step 2 — Load chat history with Timeout ─────────────────────────────
     let chatHistory: any[] = [];
     let previousSummary = "";
     let existingOrderId: string | null = null;
     try {
       const [histRes, sessionRes] = await Promise.all([
-        fetch(`${SUPABASE_URL}/rest/v1/chat_messages?session_id=eq.${encodeURIComponent(sessionId)}&select=role,content,created_at&order=created_at.desc&limit=8`, { headers: dbH() }),
-        fetch(`${SUPABASE_URL}/rest/v1/chat_sessions?session_id=eq.${encodeURIComponent(sessionId)}&select=ai_summary,order_id&limit=1`, { headers: dbH() })
+        fetch(`${SUPABASE_URL}/rest/v1/chat_messages?session_id=eq.${encodeURIComponent(sessionId)}&select=role,content,created_at&order=created_at.desc&limit=8`, { headers: dbH(), signal: AbortSignal.timeout(3500) }),
+        fetch(`${SUPABASE_URL}/rest/v1/chat_sessions?session_id=eq.${encodeURIComponent(sessionId)}&select=ai_summary,order_id&limit=1`, { headers: dbH(), signal: AbortSignal.timeout(3500) })
       ]);
       if (histRes.ok) {
         const rows: any[] = await histRes.json();
@@ -565,10 +605,10 @@ Deno.serve(async (req: Request) => {
       }
     } catch (e) { console.warn('[chat-assistant] history fetch failed:', e); }
 
-    // ── Steps 3 & 4 — Fetch pricing + company info in parallel ─────────────
+    // ── Steps 3 & 4 — Fetch pricing + company info in parallel with Timeout ──
     const [pricingRes, companyRes] = await Promise.allSettled([
-      fetch(`${SUPABASE_URL}/rest/v1/pricing?active=eq.true&select=service_name,category,price,unit,description&order=display_order.asc`, { headers: dbH() }),
-      fetch(`${SUPABASE_URL}/rest/v1/company_info?select=*&limit=1`, { headers: dbH() }),
+      fetch(`${SUPABASE_URL}/rest/v1/pricing?active=eq.true&select=service_name,category,price,unit,description&order=display_order.asc`, { headers: dbH(), signal: AbortSignal.timeout(3500) }),
+      fetch(`${SUPABASE_URL}/rest/v1/company_info?select=*&limit=1`, { headers: dbH(), signal: AbortSignal.timeout(3500) }),
     ]);
 
     const pricingRows = pricingRes.status === 'fulfilled' && pricingRes.value.ok
@@ -576,15 +616,18 @@ Deno.serve(async (req: Request) => {
     const companyRows = companyRes.status === 'fulfilled' && companyRes.value.ok
       ? await companyRes.value.json() : null;
 
-    const pricingSummary = buildPricingSummary(pricingRows);
-    const companyInfo    = buildCompanyInfo(Array.isArray(companyRows) ? companyRows[0] : companyRows);
+    const companyData = Array.isArray(companyRows) ? companyRows[0] : companyRows;
+    const minOrderNum = companyData?.minimum_order != null ? Number(companyData.minimum_order) : null;
+
+    const pricingSummary = buildPricingSummary(pricingRows, minOrderNum);
+    const companyInfo    = buildCompanyInfo(companyData);
 
     // ── Step 5 — Build context ──────────────────────────────────────────────
     const detectedIntent  = detectIntent(message);
     const mentionedOrderId = extractOrderId(message);
     const messageCount    = chatHistory.length + conversationHistory.length;
 
-    // ── Step 6 — Fetch order by ID (tracking intent only) ──────────────────
+    // ── Step 6 — Fetch order by ID (tracking intent only) with Timeout ─────
     let orderRow: any = null;
     let orderFetchError = false;
 
@@ -592,7 +635,7 @@ Deno.serve(async (req: Request) => {
       try {
         const orderRes = await fetch(
           `${SUPABASE_URL}/rest/v1/orders?order_id=eq.${encodeURIComponent(mentionedOrderId)}&select=order_id,customer_name,status,payment_status,pickup_date,delivery_date,total_amount,created_at,delay_reason,picked_up_at,processing_at,invoiced_at,ready_at,delivered_at,completed_at,pickup_time_slot`,
-          { headers: dbH() },
+          { headers: dbH(), signal: AbortSignal.timeout(3500) },
         );
         if (orderRes.ok) {
           const rows: any[] = await orderRes.json();
@@ -611,7 +654,6 @@ Deno.serve(async (req: Request) => {
       .filter((m: any) => m.role === 'user' || m.role === 'assistant')
       .slice(-6);
 
-    // Extract known customer name from orderRow, previousSummary, or conversation history
     let knownCustomerName: string | null = orderRow?.customer_name || null;
     if (!knownCustomerName && previousSummary) {
       const nameMatch = previousSummary.match(/(?:customer(?:\s+name)?|user|name)\s*(?:is|:)\s*([A-Za-z\s]+?)(?:,|\.|\n|$)/i);
@@ -638,9 +680,7 @@ Deno.serve(async (req: Request) => {
     }
 
     // ── Step 7 — Call LLM ───────────────────────────────────────────────────
-    const minOrderVal = Array.isArray(companyRows) && companyRows[0]?.minimum_order != null 
-      ? `${Number(companyRows[0].minimum_order).toLocaleString()} Naira` 
-      : (!Array.isArray(companyRows) && companyRows?.minimum_order != null ? `${Number(companyRows.minimum_order).toLocaleString()} Naira` : '2,000 Naira');
+    const minOrderVal = minOrderNum !== null ? `${minOrderNum.toLocaleString()} Naira` : null;
 
     const userPrompt = `# FreshPress Laundry — AI Chat Assistant
 
@@ -669,9 +709,9 @@ ${previousSummary || 'No previous summary.'}
 ${JSON.stringify(last6, null, 2)}
 
 ## CRITICAL INSTRUCTIONS FOR THIS TURN:
-1. FOCUS ON LATEST MESSAGE: Base your answer directly on the USER'S LATEST MESSAGE above. If the customer shifted services or topics (e.g., they asked about "ironing" earlier, but now say "i wan wash" or state a budget), IMMEDIATELY switch to their new request (washing). NEVER carry over or repeat outdated services from previous turns.
+1. FOCUS ON LATEST MESSAGE: Base your answer directly on the USER'S LATEST MESSAGE above. If the customer shifted services or topics, IMMEDIATELY switch to their new request. NEVER carry over outdated services from previous turns.
 2. PIDGIN & COLLOQUIAL TRANSLATION: Interpret Nigerian Pidgin accurately ("i wan wash" = wants washing/laundry service, "1k" = 1,000 Naira budget, "2k" = 2,000 Naira, "two five" = 2,500 Naira).
-3. CONCISE BUDGET GUIDANCE: If the customer mentions a budget below the minimum order of ${minOrderVal}, keep your response short and direct (2-3 sentences max). State that the minimum order is ${minOrderVal} for pickup & delivery, explain that adding 1-2 more items will meet the threshold, and ask how they would like to proceed. DO NOT dump bulleted price lists unless asked.
+3. BUDGET GUIDANCE (NO HALLUCINATIONS): ${minOrderVal ? `If the customer mentions a budget below the minimum order of ${minOrderVal}, keep your response short and direct (2-3 sentences max). State that the minimum order is ${minOrderVal} for pickup & delivery, explain that adding 1-2 more items will meet the threshold, and ask how they would like to proceed.` : `If minimum order is not listed in COMPANY CONTACT & POLICIES, DO NOT fabricate any minimum order amount. Tell customer to contact WhatsApp to verify.`}
 4. GREET BY NAME: ${knownCustomerName ? `The customer's name is "${knownCustomerName}". You MUST start your response with "Hi ${knownCustomerName}," (e.g., "Hi ${knownCustomerName}, to place a pickup order...").` : 'If the customer introduces their name, greet them warmly by name.'}
 5. PAYMENT & BANK TRANSFERS: If the customer asks about payments, bank transfer, account number, or mentions OPay/cash/POS, provide the dynamic bank account details from COMPANY CONTACT & POLICIES and confirm payment methods.
 6. ZERO EMOJIS: Never use emojis in any part of the reply.
@@ -695,13 +735,12 @@ Now respond.`;
 
     let openaiRes: Response | null = null;
     let rawText = '';
-    let openRouterErr = '';
-    let openAiErr = '';
 
     if (openrouterKey) {
       try {
         openaiRes = await fetch('https://openrouter.ai/api/v1/chat/completions', {
           method:  'POST',
+          signal: AbortSignal.timeout(12000),
           headers: {
             'Content-Type':  'application/json',
             'Authorization': `Bearer ${openrouterKey}`,
@@ -712,20 +751,13 @@ Now respond.`;
             model:      'openai/gpt-4o-mini',
             max_tokens: 1024,
             messages: [
-              { role: 'system', content: getSystemPrompt(Array.isArray(companyRows) ? companyRows[0] : companyRows) },
+              { role: 'system', content: getSystemPrompt(companyData) },
               { role: 'user',   content: userPrompt    },
             ],
           }),
         });
-
-        if (!openaiRes.ok) {
-          openRouterErr = `${openaiRes.status}: ${await openaiRes.text()}`;
-          console.warn('[chat-assistant] OpenRouter failed status:', openRouterErr);
-          openaiRes = null;
-        }
-      } catch (err: any) {
-        openRouterErr = `Exception: ${err?.message || String(err)}`;
-        console.warn('[chat-assistant] OpenRouter fetch error:', err);
+        if (!openaiRes.ok) openaiRes = null;
+      } catch (_err) {
         openaiRes = null;
       }
     }
@@ -734,6 +766,7 @@ Now respond.`;
       try {
         openaiRes = await fetch('https://api.openai.com/v1/chat/completions', {
           method:  'POST',
+          signal: AbortSignal.timeout(12000),
           headers: {
             'Content-Type':  'application/json',
             'Authorization': `Bearer ${openaiKey}`,
@@ -742,25 +775,19 @@ Now respond.`;
             model:      'gpt-4o-mini',
             max_tokens: 1024,
             messages: [
-              { role: 'system', content: getSystemPrompt(Array.isArray(companyRows) ? companyRows[0] : companyRows) },
+              { role: 'system', content: getSystemPrompt(companyData) },
               { role: 'user',   content: userPrompt    },
             ],
           }),
         });
-        if (!openaiRes.ok) {
-          openAiErr = `${openaiRes.status}: ${await openaiRes.text()}`;
-          console.warn('[chat-assistant] Direct OpenAI failed status:', openAiErr);
-          openaiRes = null;
-        }
-      } catch (err: any) {
-        openAiErr = `Exception: ${err?.message || String(err)}`;
-        console.warn('[chat-assistant] Direct OpenAI fetch error:', err);
+        if (!openaiRes.ok) openaiRes = null;
+      } catch (_err) {
         openaiRes = null;
       }
     }
 
     if (!openaiRes || !openaiRes.ok) {
-      console.error('[chat-assistant] All LLM providers failed.');
+      console.error('[chat-assistant] All LLM providers failed or timed out.');
       return Response.json(errorReply(now), { status: 200, headers: CORS });
     }
 
@@ -776,54 +803,81 @@ Now respond.`;
     const requiresHuman  = parsed.requires_human ?? false;
     let   suggestedActions: any[] = Array.isArray(parsed.suggested_actions) ? parsed.suggested_actions : [];
 
-    // Order Execution via Chat with Strict Parameter Validation & Timeout
+    // Order Execution via Chat with Strict Business Rules & Idempotency
     if (parsed.create_order_payload) {
       const payload = parsed.create_order_payload;
       const cleanName    = String(payload.customer_name || '').trim().slice(0, 100);
       const cleanPhone   = String(payload.phone || '').trim().slice(0, 25);
       const cleanEmail   = String(payload.email || '').toLowerCase().replace(/\s/g, '').slice(0, 100);
       const cleanAddress = String(payload.address || '').trim().slice(0, 250);
-      const pickupDate   = String(payload.pickup_date || '').trim();
-      const timeSlot     = String(payload.pickup_time_slot || 'morning').trim();
+      const rawDate      = String(payload.pickup_date || '').trim();
+      const rawSlot      = String(payload.pickup_time_slot || 'morning').trim();
 
       const phoneDigits = cleanPhone.replace(/\D/g, '');
       const validEmail  = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(cleanEmail);
+      const dateProblem = checkPickupDate(rawDate);
+      const validTimeSlot = normalizeTimeSlot(rawSlot);
 
-      if (cleanName && phoneDigits.length >= 10 && validEmail && cleanAddress && pickupDate) {
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 12000);
+      if (!dateProblem && validTimeSlot && cleanName && phoneDigits.length >= 10 && validEmail && cleanAddress) {
+        // Idempotency check: 10-minute time bucket lock
+        const timeBucket = Math.floor(Date.now() / (10 * 60 * 1000));
+        const idempotencyKey = `${phoneDigits.slice(-10)}_${rawDate}_${validTimeSlot}_${timeBucket}`;
+
+        let duplicateExists = false;
         try {
-          const createRes = await fetch(`${SUPABASE_URL}/functions/v1/create-order`, {
-            method: 'POST',
-            signal: controller.signal,
-            headers: {
-              'Content-Type': 'application/json',
-              'x-internal-secret': Deno.env.get('INTERNAL_API_SECRET') ?? '',
-            },
-            body: JSON.stringify({
-              customer_name: cleanName,
-              email: cleanEmail,
-              phone: cleanPhone,
-              address: cleanAddress,
-              pickup_date: pickupDate,
-              pickup_time_slot: timeSlot,
-              special_instructions: payload.special_instructions ? String(payload.special_instructions).slice(0, 200) : "Created via Web AI Chat",
-              source: 'website'
-            })
-          });
-
-          if (createRes.ok) {
-            const orderData = await createRes.json();
-            parsed.created_order_id = orderData.orderId;
-            reply += `\n\nPerfect! Your order has been created successfully. Your Order ID is **${orderData.orderId}**. Our team will arrive on ${orderData.pickupDate}.`;
-          } else {
-            reply += `\n\nI apologize, but I encountered an error saving your order. Please reach out on WhatsApp.`;
+          const lockRes = await fetch(
+            `${SUPABASE_URL}/rest/v1/order_idempotency_keys?idempotency_key=eq.${encodeURIComponent(idempotencyKey)}&select=order_id&limit=1`,
+            { headers: dbH(), signal: AbortSignal.timeout(3000) }
+          );
+          if (lockRes.ok) {
+            const locks = await lockRes.json();
+            if (locks.length > 0) {
+              duplicateExists = true;
+              parsed.created_order_id = locks[0].order_id;
+              reply += `\n\nNote: An order for this pickup slot was already created! Your Order ID is **${locks[0].order_id}**.`;
+            }
           }
-        } catch (e) {
-          console.error('[chat-assistant] Create order error:', e);
-          reply += `\n\nI apologize, but our booking service is slow right now. Please reach out on WhatsApp or submit through our Request Pickup form.`;
-        } finally {
-          clearTimeout(timeout);
+        } catch (_e) {}
+
+        if (!duplicateExists) {
+          try {
+            const createRes = await fetch(`${SUPABASE_URL}/functions/v1/create-order`, {
+              method: 'POST',
+              signal: AbortSignal.timeout(12000),
+              headers: {
+                'Content-Type': 'application/json',
+                'x-internal-secret': Deno.env.get('INTERNAL_API_SECRET') ?? '',
+              },
+              body: JSON.stringify({
+                customer_name: cleanName,
+                email: cleanEmail,
+                phone: cleanPhone,
+                address: cleanAddress,
+                pickup_date: rawDate,
+                pickup_time_slot: validTimeSlot,
+                special_instructions: payload.special_instructions ? String(payload.special_instructions).slice(0, 200) : "Created via Web AI Chat",
+                source: 'website'
+              })
+            });
+
+            if (createRes.ok) {
+              const orderData = await createRes.json();
+              parsed.created_order_id = orderData.orderId;
+              reply += `\n\nPerfect! Your order has been created successfully. Your Order ID is **${orderData.orderId}**. Our team will arrive on ${orderData.pickupDate} during the ${validTimeSlot} window.`;
+
+              // Record idempotency key asynchronously
+              fetch(`${SUPABASE_URL}/rest/v1/order_idempotency_keys`, {
+                method: 'POST',
+                headers: dbH(),
+                body: JSON.stringify({ idempotency_key: idempotencyKey, order_id: orderData.orderId })
+              }).catch(() => {});
+            } else {
+              reply += `\n\nI apologize, but I encountered an error saving your order. Please reach out on WhatsApp to confirm.`;
+            }
+          } catch (e) {
+            console.error('[chat-assistant] Create order error:', e);
+            reply += `\n\nI apologize, but our booking service is slow right now. Please reach out on WhatsApp or submit through our Request Pickup form.`;
+          }
         }
       }
     }
