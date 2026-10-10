@@ -56,6 +56,7 @@ function userSpeechOnly(transcript: string): string {
     .join('\n');
 }
 
+// ── Date and Phone Normalizers ────────────────────────────────────────────────
 function checkPickupDate(d: string): string | null {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return 'The date must be a real calendar date. Ask the caller to repeat it.';
   const dt = new Date(`${d}T00:00:00Z`);
@@ -68,12 +69,33 @@ function checkPickupDate(d: string): string | null {
   return null;
 }
 
+function normalizePhoneDigits(phone: string): string {
+  let digits = (phone || '').replace(/\D/g, '');
+  if (digits.startsWith('234') && digits.length === 13) {
+    digits = '0' + digits.slice(3);
+  }
+  return digits.slice(-10);
+}
+
+function normalizeTimeSlot(slotStr: string): string | null {
+  const s = String(slotStr || '').toLowerCase().trim();
+  if (['morning', '9am', '10am', '11am', '12pm', '09:00', '10:00', '11:00', '12:00'].some(k => s.includes(k))) return 'morning';
+  if (['afternoon', '1pm', '2pm', '3pm', '13:00', '14:00', '15:00'].some(k => s.includes(k))) return 'afternoon';
+  if (['evening', '4pm', '5pm', '6pm', '7pm', '16:00', '17:00', '18:00', '19:00'].some(k => s.includes(k))) return 'evening';
+  return null;
+}
+
 // ── Vapi API Summary Helper ──────────────────────────────────────────────────
 async function fetchVapiCall(callId: string) {
-  const r = await fetch(`https://api.vapi.ai/call/${callId}`, {
-    headers: { 'Authorization': `Bearer ${Deno.env.get('VAPI_API_KEY')}` }
-  });
-  return r.ok ? await r.json() : null;
+  try {
+    const r = await fetch(`https://api.vapi.ai/call/${callId}`, {
+      headers: { 'Authorization': `Bearer ${Deno.env.get('VAPI_API_KEY')}` },
+      signal: AbortSignal.timeout(5000)
+    });
+    return r.ok ? await r.json() : null;
+  } catch (_e) {
+    return null;
+  }
 }
 
 async function getSummaryWithRetry(callId: string, initial: string): Promise<string> {
@@ -87,89 +109,108 @@ async function getSummaryWithRetry(callId: string, initial: string): Promise<str
   return '';
 }
 
-// ── Tool Implementations ──────────────────────────────────────────────────────
+// ── Tool Implementations (Strictly Bounded Timeouts & Zero Hallucinated Numbers) ──
 
-async function getPricing(args: any) {
-  const [pricingRes, companyRes] = await Promise.allSettled([
-    fetch(`${SUPABASE_URL}/rest/v1/pricing?active=eq.true&select=service_name,category,price,unit&order=display_order.asc`, { headers: dbH() }),
-    fetch(`${SUPABASE_URL}/rest/v1/company_info?select=minimum_order&limit=1`, { headers: dbH() })
-  ]);
+async function getPricing(_args: any) {
+  try {
+    const [pricingRes, companyRes] = await Promise.allSettled([
+      fetch(`${SUPABASE_URL}/rest/v1/pricing?active=eq.true&select=service_name,category,price,unit&order=display_order.asc`, {
+        headers: dbH(),
+        signal: AbortSignal.timeout(4000)
+      }),
+      fetch(`${SUPABASE_URL}/rest/v1/company_info?select=minimum_order&limit=1`, {
+        headers: dbH(),
+        signal: AbortSignal.timeout(4000)
+      })
+    ]);
 
-  if (pricingRes.status !== 'fulfilled' || !pricingRes.value.ok) return "Pricing data is temporarily unavailable.";
-  const rows = await pricingRes.value.json();
-  if (rows.length === 0) return "No pricing data found.";
-
-  let minOrderNum = 2000;
-  if (companyRes.status === 'fulfilled' && companyRes.value.ok) {
-    const compRows = await companyRes.value.json();
-    if (compRows.length > 0 && compRows[0].minimum_order != null) {
-      minOrderNum = Number(compRows[0].minimum_order);
+    if (pricingRes.status !== 'fulfilled' || !pricingRes.value.ok) {
+      return "Pricing data is temporarily unavailable. Please ask the caller to call back in a few minutes or contact us on WhatsApp.";
     }
-  }
-  const minOrder = minOrderNum.toLocaleString();
+    const rows = await pricingRes.value.json();
+    if (rows.length === 0) return "No pricing data found in our catalog. Please check WhatsApp for custom inquiries.";
 
-  const cats: Record<string, string[]> = {};
-  for (const r of rows) {
-    const cat = r.category || 'Other';
-    if (!cats[cat]) cats[cat] = [];
-    const price = Number(r.price);
-    const isPerKg = r.unit && /kg|kilo/i.test(r.unit);
-    let note = '';
-    if (!isPerKg && !isNaN(price)) {
-      note = price >= minOrderNum
-        ? 'meets the minimum order on its own'
-        : `is ${(minOrderNum - price).toLocaleString()} Naira below the minimum order`;
+    let minOrderNum: number | null = null;
+    if (companyRes.status === 'fulfilled' && companyRes.value.ok) {
+      const compRows = await companyRes.value.json();
+      if (compRows.length > 0 && compRows[0].minimum_order != null) {
+        minOrderNum = Number(compRows[0].minimum_order);
+      }
     }
-    const unitStr = r.unit ? ' per ' + r.unit : '';
-    const noteStr = note ? ` (${note})` : '';
-    cats[cat].push(`${r.service_name}: ${r.price} Naira${unitStr}${noteStr}`);
-  }
 
-  let resultStr = "Live Pricing Data:\n";
-  for (const [cat, items] of Object.entries(cats)) {
-    resultStr += `${cat}:\n- ${items.join('\n- ')}\n\n`;
+    const cats: Record<string, string[]> = {};
+    for (const r of rows) {
+      const cat = r.category || 'Other';
+      if (!cats[cat]) cats[cat] = [];
+      const price = Number(r.price);
+      const isPerKg = r.unit && /kg|kilo/i.test(r.unit);
+      let note = '';
+      if (minOrderNum !== null && !isPerKg && !isNaN(price)) {
+        note = price >= minOrderNum
+          ? 'meets the minimum order on its own'
+          : `is ${(minOrderNum - price).toLocaleString()} Naira below the minimum order`;
+      }
+      const unitStr = r.unit ? ' per ' + r.unit : '';
+      const noteStr = note ? ` (${note})` : '';
+      cats[cat].push(`${r.service_name}: ${r.price} Naira${unitStr}${noteStr}`);
+    }
+
+    let resultStr = "Live Pricing Data:\n";
+    for (const [cat, items] of Object.entries(cats)) {
+      resultStr += `${cat}:\n- ${items.join('\n- ')}\n\n`;
+    }
+    if (minOrderNum !== null) {
+      resultStr += `Minimum Order: ${minOrderNum.toLocaleString()} Naira (required for free doorstep pickup and delivery across Lagos).`;
+    } else {
+      resultStr += `Minimum Order: Minimum order threshold is not currently specified. Please advise caller to confirm with customer support on WhatsApp.`;
+    }
+    return resultStr;
+  } catch (_e) {
+    return "Our pricing system is currently taking too long to reply. Please advise the caller to call back shortly or check fresh-press-chi.vercel.app/pricing.";
   }
-  resultStr += `Minimum Order: ${minOrder} Naira (required for free doorstep pickup and delivery across Lagos).`;
-  return resultStr;
 }
 
 async function getCompanyInfo(_args: any) {
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/company_info?select=*&limit=1`, { headers: dbH() });
-  if (!res.ok) return "Company information is temporarily unavailable.";
-  const rows = await res.json();
-  if (rows.length === 0) return "Company information not configured.";
-  
-  const c = rows[0];
-  let info = `FreshPress Laundry Information:\n`;
-  const lagosTime = new Date().toLocaleString("en-NG", { timeZone: "Africa/Lagos", dateStyle: "full", timeStyle: "short" });
-  info += `- Current Live Date & Time: ${lagosTime}\n`;
-  if (c.minimum_order) info += `- Minimum Order: ${Number(c.minimum_order).toLocaleString()} Naira (required for free doorstep pickup and delivery across Lagos)\n`;
-  if (c.service_areas) info += `- Free Pickup Coverage Areas: ${c.service_areas}\n`;
-  info += `- Pickup Windows: Morning (9:00 AM to 12:00 PM), Afternoon (1:00 PM to 4:00 PM), Evening (4:00 PM to 7:00 PM). Note: These are arrival windows, not exact fixed minutes.\n`;
-  if (c.company_address) info += `- Address: ${c.company_address}\n`;
-  if (c.company_phone) info += `- Phone/WhatsApp: ${c.company_phone}\n`;
-  if (c.company_email) info += `- Email: ${c.company_email}\n`;
-  
-  let bankName = c.bank_name || 'Bank';
-  const bnLower = bankName.toLowerCase();
-  if (bnLower.includes('opay')) {
-    bankName = 'Oh-Pay';
-  } else if (bnLower.includes('gtb') || bnLower.includes('guaranty')) {
-    bankName = 'G T B';
-  } else if (bnLower.includes('fcmb')) {
-    bankName = 'F C M B';
-  } else if (bnLower.includes('kuda')) {
-    bankName = 'Koo-dah Bank';
-  } else if (bnLower.includes('uba')) {
-    bankName = 'U B A';
+  try {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/company_info?select=*&limit=1`, {
+      headers: dbH(),
+      signal: AbortSignal.timeout(4000)
+    });
+    if (!res.ok) return "Company information is temporarily unavailable. Please call back shortly.";
+    const rows = await res.json();
+    if (rows.length === 0) return "Company information not configured. Please call back.";
+    
+    const c = rows[0];
+    let info = `FreshPress Laundry Information:\n`;
+    const lagosTime = new Date().toLocaleString("en-NG", { timeZone: "Africa/Lagos", dateStyle: "full", timeStyle: "short" });
+    info += `- Current Live Date & Time: ${lagosTime}\n`;
+    if (c.minimum_order != null) {
+      info += `- Minimum Order: ${Number(c.minimum_order).toLocaleString()} Naira (required for free doorstep pickup and delivery across Lagos)\n`;
+    }
+    if (c.service_areas) info += `- Free Pickup Coverage Areas: ${c.service_areas}\n`;
+    info += `- Pickup Windows: Morning (9:00 AM to 12:00 PM), Afternoon (1:00 PM to 4:00 PM), Evening (4:00 PM to 7:00 PM). Note: These are arrival windows, not fixed minutes.\n`;
+    if (c.company_address) info += `- Address: ${c.company_address}\n`;
+    if (c.company_phone) info += `- Phone/WhatsApp: ${c.company_phone}\n`;
+    if (c.company_email) info += `- Email: ${c.company_email}\n`;
+    
+    let bankName = c.bank_name || 'Bank';
+    const bnLower = bankName.toLowerCase();
+    if (bnLower.includes('opay')) bankName = 'Oh-Pay';
+    else if (bnLower.includes('gtb') || bnLower.includes('guaranty')) bankName = 'G T B';
+    else if (bnLower.includes('fcmb')) bankName = 'F C M B';
+    else if (bnLower.includes('kuda')) bankName = 'Koo-dah Bank';
+    else if (bnLower.includes('uba')) bankName = 'U B A';
+    
+    if (c.account_number) info += `- Bank Account: ${c.account_number} (${bankName})\n`;
+    info += `- Working Hours: Monday-Saturday 7AM-8PM, closed Sundays.\n`;
+    return info;
+  } catch (_e) {
+    return "Company information service is temporarily slow. FreshPress operates Monday to Saturday 7AM to 8PM. Please call back in a moment or reach us on WhatsApp.";
   }
-  
-  if (c.account_number) info += `- Bank Account: ${c.account_number} (${bankName})\n`;
-  info += `- Working Hours: Monday-Saturday 7AM-8PM, closed Sundays.\n`;
-  return info;
 }
 
-async function checkOrderStatus(args: any) {
+// ── Caller Verification Guard on Order Lookups ────────────────────────────────
+async function checkOrderStatus(args: any, callerPhone: string | null) {
   const rawId = (args.order_id || '').toString().trim();
   
   if (isSpokenInjection(rawId)) {
@@ -182,20 +223,37 @@ async function checkOrderStatus(args: any) {
     return "Please provide a valid order ID in the format LAU-123456.";
   }
   
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/orders?order_id=eq.${encodeURIComponent(orderId)}&select=order_id,status,payment_status,total_amount,pickup_date,pickup_time_slot,delay_reason`, { headers: dbH() });
-  if (!res.ok) return "Failed to lookup order.";
-  const rows = await res.json();
-  if (rows.length === 0) return `Order ${orderId} not found.`;
-  
-  const order = rows[0];
-  let info = `Order ${order.order_id} is currently ${order.status}. Payment is ${order.payment_status}.`;
-  if (order.status === 'pending') {
-    info += ` Scheduled for pickup on ${order.pickup_date} (${order.pickup_time_slot}).`;
-    if (order.delay_reason) info += ` Note: Rescheduled due to ${order.delay_reason}.`;
+  try {
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/orders?order_id=eq.${encodeURIComponent(orderId)}&select=order_id,phone,status,payment_status,total_amount,pickup_date,pickup_time_slot,delay_reason`,
+      { headers: dbH(), signal: AbortSignal.timeout(4000) }
+    );
+    if (!res.ok) return "Failed to lookup order. Please call back in a moment or check on WhatsApp.";
+    const rows = await res.json();
+    if (rows.length === 0) return `Order ${orderId} not found in our system.`;
+    
+    const order = rows[0];
+
+    // Caller Verification: Ensure caller number matches phone on order
+    if (callerPhone && order.phone) {
+      const normCaller = normalizePhoneDigits(callerPhone);
+      const normOrder  = normalizePhoneDigits(order.phone);
+      if (normCaller.length >= 7 && normOrder.length >= 7 && normCaller !== normOrder) {
+        return `For security and privacy, I can only provide order details to the phone number on file for this booking. If you are calling from a different line, please contact our team on WhatsApp at +2348113143272 with your Order ID.`;
+      }
+    }
+    
+    let info = `Order ${order.order_id} is currently ${order.status}. Payment is ${order.payment_status}.`;
+    if (order.status === 'pending') {
+      info += ` Scheduled for pickup on ${order.pickup_date} (${order.pickup_time_slot}).`;
+      if (order.delay_reason) info += ` Note: Rescheduled due to ${order.delay_reason}.`;
+    }
+    if (order.total_amount) info += ` Total amount is ${Number(order.total_amount).toLocaleString()} Naira.`;
+    
+    return info;
+  } catch (_e) {
+    return "The order lookup service took too long to respond. Please ask the caller to track their order at fresh-press-chi.vercel.app/track or contact us on WhatsApp.";
   }
-  if (order.total_amount) info += ` Total amount is ${order.total_amount} Naira.`;
-  
-  return info;
 }
 
 async function createPickupOrder(args: any) {
@@ -226,33 +284,32 @@ async function createPickupOrder(args: any) {
   const dateProblem = checkPickupDate(String(pickup_date));
   if (dateProblem) return dateProblem;
 
-  const slotLower = String(pickup_time_slot || '').toLowerCase().trim();
-  let validTimeSlot: string | null = null;
-  if (['morning', '9am', '10am', '11am', '09:00', '10:00', '11:00'].some(k => slotLower.includes(k))) validTimeSlot = 'morning';
-  else if (['afternoon', '12pm', '1pm', '2pm', '3pm', '12:00', '13:00', '14:00', '15:00'].some(k => slotLower.includes(k))) validTimeSlot = 'afternoon';
-  else if (['evening', '4pm', '5pm', '6pm', '7pm', '16:00', '17:00', '18:00', '19:00'].some(k => slotLower.includes(k))) validTimeSlot = 'evening';
+  const validTimeSlot = normalizeTimeSlot(pickup_time_slot);
   if (!validTimeSlot) return "I did not catch a valid time slot. Ask the caller to choose morning, afternoon, or evening.";
 
-  // Duplicate guard: same phone, date and slot in the last 10 minutes
-  const since = new Date(Date.now() - 10 * 60 * 1000).toISOString();
-  const dupRes = await fetch(
-    `${SUPABASE_URL}/rest/v1/orders?phone=eq.${encodeURIComponent(cleanPhone)}&pickup_date=eq.${pickup_date}&pickup_time_slot=eq.${validTimeSlot}&created_at=gte.${encodeURIComponent(since)}&select=order_id&limit=1`,
-    { headers: dbH() }
-  );
-  if (dupRes.ok) {
-    const dup = await dupRes.json();
-    if (dup.length > 0) {
-      return `An order for this caller already exists. The Order ID is ${dup[0].order_id}. Read it out and do not create another.`;
+  // DB Atomic Idempotency Check: 10-minute bucket key
+  const timeBucket = Math.floor(Date.now() / (10 * 60 * 1000));
+  const idempotencyKey = `${phoneDigits}_${pickup_date}_${validTimeSlot}_${timeBucket}`;
+
+  try {
+    const lockCheck = await fetch(
+      `${SUPABASE_URL}/rest/v1/order_idempotency_keys?idempotency_key=eq.${encodeURIComponent(idempotencyKey)}&select=order_id&limit=1`,
+      { headers: dbH(), signal: AbortSignal.timeout(3000) }
+    );
+    if (lockCheck.ok) {
+      const existing = await lockCheck.json();
+      if (existing.length > 0) {
+        return `An order for this caller and pickup slot already exists. The Order ID is ${existing[0].order_id}. Read it out and do not create another.`;
+      }
     }
+  } catch (_e) {
+    // Non-blocking fallback to create-order
   }
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 15000);
-  let res: Response;
   try {
-    res = await fetch(`${SUPABASE_URL}/functions/v1/create-order`, {
+    const res = await fetch(`${SUPABASE_URL}/functions/v1/create-order`, {
       method: 'POST',
-      signal: controller.signal,
+      signal: AbortSignal.timeout(12000),
       headers: {
         'Content-Type': 'application/json',
         'x-internal-secret': Deno.env.get('INTERNAL_API_SECRET') ?? '',
@@ -268,21 +325,27 @@ async function createPickupOrder(args: any) {
         source: 'phone'
       })
     });
+
+    if (!res.ok) {
+      console.error("Order creation failed", await res.text().catch(() => ''));
+      return "Failed to create order due to a system error. Please instruct the caller to call back in a moment, use fresh-press-chi.vercel.app, or reach us on WhatsApp.";
+    }
+
+    const data = await res.json();
+    const orderId = data.orderId || 'an order';
+
+    // Save idempotency key asynchronously
+    fetch(`${SUPABASE_URL}/rest/v1/order_idempotency_keys`, {
+      method: 'POST',
+      headers: dbH(),
+      body: JSON.stringify({ idempotency_key: idempotencyKey, order_id: orderId })
+    }).catch(() => {});
+
+    return `Order successfully created! The Order ID is ${orderId}. Inform the customer that our team will arrive on ${pickup_date} during the ${validTimeSlot} slot.`;
   } catch (_e) {
-    console.error('create-order call failed or timed out');
-    return "The booking system is slow right now. Ask the caller to try again in a minute or use the website.";
-  } finally {
-    clearTimeout(timer);
+    console.error('create-order call timed out');
+    return "The booking system is taking too long right now. Ask the caller to call back in a couple of minutes or use the website at fresh-press-chi.vercel.app.";
   }
-
-  if (!res.ok) {
-    console.error("Order creation failed", await res.text());
-    return "Failed to create order due to a system error. Please instruct the caller to use the website at fresh-press-chi.vercel.app or reach us on WhatsApp.";
-  }
-
-  const data = await res.json();
-  const orderId = data.orderId || 'an order';
-  return `Order successfully created! The Order ID is ${orderId}. Inform the customer that our team will arrive on ${pickup_date} during the ${validTimeSlot} slot.`;
 }
 
 async function saveVapiRecording(callId: string, initialUrl: string): Promise<string> {
@@ -301,7 +364,7 @@ async function saveVapiRecording(callId: string, initialUrl: string): Promise<st
       for (const url of candidates) {
         if (!url || typeof url !== 'string' || !url.startsWith('http')) continue;
         try {
-          const audioRes = await fetch(url);
+          const audioRes = await fetch(url, { signal: AbortSignal.timeout(8000) });
           if (audioRes.ok) {
             const audioBlob = await audioRes.blob();
             if (audioBlob.size > 100) {
@@ -365,7 +428,8 @@ async function logEndOfCallReport(message: any) {
       }
 
       const res = await fetch(`${SUPABASE_URL}/rest/v1/customers?phone=eq.${encodeURIComponent(localPhone)}&select=id&limit=1`, {
-        headers: dbH()
+        headers: dbH(),
+        signal: AbortSignal.timeout(4000)
       });
       if (res.ok) {
         const rows = await res.json();
@@ -423,7 +487,7 @@ Deno.serve(async (req: Request) => {
 
   const internalSecret = req.headers.get("x-internal-secret") ?? '';
   const expectedInternal = Deno.env.get('INTERNAL_API_SECRET') ?? '';
-  const isInternalSecret = Boolean(internalSecret && expectedInternal && internalSecret === expectedInternal);
+  const isInternalSecret = safeEqual(internalSecret, expectedInternal);
 
   let body: any = {};
   try {
@@ -462,6 +526,10 @@ Deno.serve(async (req: Request) => {
     return Response.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
+  const callerPhone = body.message?.call?.customer?.number 
+    || body.message?.call?.phoneCallProviderDetails?.from 
+    || null;
+
   try {
     const type = body.message?.type;
     
@@ -485,7 +553,7 @@ Deno.serve(async (req: Request) => {
         } else if (functionName === 'get_company_info') {
           resultData = await getCompanyInfo(args);
         } else if (functionName === 'check_order_status') {
-          resultData = await checkOrderStatus(args);
+          resultData = await checkOrderStatus(args, callerPhone);
         } else if (functionName === 'create_pickup_order') {
           resultData = await createPickupOrder(args);
         } else {

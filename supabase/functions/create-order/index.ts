@@ -41,7 +41,13 @@ interface StaffMember {
   last_assigned_at: string | null;
 }
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
+function safeEqual(a: string, b: string): boolean {
+  if (!a || !b || a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
 function escapeHtml(str: string): string {
   if (!str) return '';
   return str.toString().replace(/[&<>'"]/g, 
@@ -231,7 +237,7 @@ Deno.serve(async (req: Request) => {
 
     // Verify internal secret for protected sources
     const internalSecret = Deno.env.get('INTERNAL_API_SECRET') ?? '';
-    const internalOk = !!internalSecret && req.headers.get('x-internal-secret') === internalSecret;
+    const internalOk = safeEqual(req.headers.get('x-internal-secret') ?? '', internalSecret);
     const safeSource = internalOk && ['phone', 'whatsapp', 'walkin'].includes(body.source ?? '')
       ? body.source
       : 'website';
