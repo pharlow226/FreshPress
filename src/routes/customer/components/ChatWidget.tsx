@@ -87,27 +87,14 @@ const ChatWidget = () => {
   const loadChatHistory = async () => {
     setIsLoadingHistory(true);
     try {
-      const { data } = await supabase
-        .from("chat_messages").select("role, content, created_at")
-        .eq("session_id", sessionId).order("created_at", { ascending: true }).limit(50);
-      if (data && data.length > 0) {
+      const { data, error } = await supabase.rpc("get_chat_history", { p_session_id: sessionId });
+      if (!error && data && data.length > 0) {
         setMessages(data.map((msg: any) => ({ id: msg.created_at, role: msg.role, content: msg.content, timestamp: msg.created_at })));
       } else { setMessages([WELCOME_MESSAGE]); }
       setHasLoadedHistory(true);
     } catch {
       setMessages([WELCOME_MESSAGE]); setHasLoadedHistory(true);
     } finally { setIsLoadingHistory(false); }
-  };
-
-  const ensureSession = async () => {
-    try {
-      const { data } = await supabase.from("chat_sessions").select("session_id").eq("session_id", sessionId).single();
-      if (!data) {
-        await supabase.from("chat_sessions").insert({ session_id: sessionId, started_at: new Date().toISOString(), last_activity_at: new Date().toISOString() });
-      } else {
-        await supabase.from("chat_sessions").update({ last_activity_at: new Date().toISOString() }).eq("session_id", sessionId);
-      }
-    } catch { /* non-fatal */ }
   };
 
   const sendMessage = async (overrideText?: string) => {
@@ -118,7 +105,6 @@ const ChatWidget = () => {
     setInputValue("");
     setIsLoading(true);
     try {
-      await ensureSession();
       const recentHistory = messages.filter(m => m.role !== "system").slice(-10).map(m => ({ role: m.role, content: m.content }));
       const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY as string;
       if (!SUPABASE_ANON_KEY) throw new Error('VITE_SUPABASE_ANON_KEY is not set');
@@ -144,9 +130,6 @@ const ChatWidget = () => {
       }
       setMessages(prev => [...prev, { id: Date.now() + "-reply", role: "assistant", content: replyText, timestamp: new Date().toISOString(), suggested_actions: Array.isArray(data.suggested_actions) ? data.suggested_actions : undefined }]);
       if (!isOpen) setUnreadCount(prev => prev + 1);
-
-      // Persist session update only (Edge Function handles saving messages server-side)
-      try { await supabase.from("chat_sessions").update({ messages_count: messages.length + 2, last_activity_at: new Date().toISOString() }).eq("session_id", sessionId); } catch { /* ignore */ }
     } catch {
       setMessages(prev => [...prev, { id: Date.now() + "-error", role: "assistant", content: "Sorry, I'm having trouble connecting. Please try again or reach us on WhatsApp at +234 811 314 3272.", timestamp: new Date().toISOString() }]);
     } finally { setIsLoading(false); }

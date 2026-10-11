@@ -198,16 +198,12 @@ export function VoiceLogsPage() {
     setQuotaLoading(true);
     setQuotaError(null);
     try {
-      const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-      const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
-      const response = await fetch(`${supabaseUrl}/functions/v1/get-voice-quota`, {
-        headers: { 'apikey': supabaseKey, 'Authorization': `Bearer ${supabaseKey}` }
-      });
-      const data = await response.json();
-      if (data.error) throw new Error(data.error);
+      const { data, error } = await supabase.functions.invoke('get-voice-quota');
+      if (error) throw error;
+      if (data?.error) throw new Error(data.error);
       setElevenLabsQuota(data);
     } catch (err: any) {
-      setQuotaError('ElevenLabs API key not configured.');
+      setQuotaError(err?.message || 'ElevenLabs quota could not be loaded.');
     } finally {
       setQuotaLoading(false);
     }
