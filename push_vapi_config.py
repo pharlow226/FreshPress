@@ -1,3 +1,4 @@
+import os
 import json
 import requests
 
@@ -35,7 +36,7 @@ patch_payload = {
 }
 
 # The service role key or internal secret used to authorize with Supabase edge function
-SERVICE_ROLE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBvZml5dGtwZHVwcmJrbWd1bmJnIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3MDg5NTMzMSwiZXhwIjoyMDg2NDcxMzMxfQ.y0ZHeRNyhfckjexZZnM0IJa9ZgXXo8BO7qaYg3EE5og"
+SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or os.environ.get("SERVICE_ROLE_KEY", "")
 EDGE_FUNCTION_URL = "https://pofiytkpduprbkmgunbg.supabase.co/functions/v1/vapi-webhook"
 
 req_data = {
