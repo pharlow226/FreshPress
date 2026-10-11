@@ -36,6 +36,15 @@ function safeEqual(a: string, b: string): boolean {
   return diff === 0;
 }
 
+function escapeHtml(str: string): string {
+  if (!str) return '';
+  return str.toString().replace(/[&<>'"]/g, 
+    tag => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;'
+    }[tag] || tag)
+  );
+}
+
 function dbH(extra: Record<string, any> = {}): Record<string, string> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -289,7 +298,7 @@ function buildOrderInfo(orderRow: any | null, orderId: string | null, fetchError
   return JSON.stringify({
     found:          true,
     order_id:       orderRow.order_id,
-    customer_name:  orderRow.customer_name,
+    customer_name:  orderRow.customer_name ? orderRow.customer_name.split(' ')[0] : 'Customer',
     status:         STATUS_LABELS[orderRow.status]  ?? orderRow.status,
     status_key:     orderRow.status,
     payment_status: PAYMENT_LABELS[orderRow.payment_status] ?? orderRow.payment_status,
@@ -650,7 +659,8 @@ Deno.serve(async (req: Request) => {
 
     const orderInfo = buildOrderInfo(orderRow, mentionedOrderId, orderFetchError);
 
-    const last6 = [...chatHistory, ...conversationHistory]
+    const historySource = chatHistory.length > 0 ? chatHistory : conversationHistory;
+    const last6 = historySource
       .filter((m: any) => m.role === 'user' || m.role === 'assistant')
       .slice(-6);
 
@@ -936,8 +946,8 @@ Now respond.`;
   <table style="width:100%;border-collapse:collapse;font-size:14px;">
     <tr><td style="padding:6px;color:#64748b;width:140px;">Session ID</td><td style="padding:6px;font-weight:600;">${sessionId}</td></tr>
     <tr><td style="padding:6px;color:#64748b;">Topic</td><td style="padding:6px;font-weight:600;">${topic}</td></tr>
-    <tr><td style="padding:6px;color:#64748b;">Customer Message</td><td style="padding:6px;">${message}</td></tr>
-    <tr><td style="padding:6px;color:#64748b;">Reply</td><td style="padding:6px;">${reply}</td></tr>
+    <tr><td style="padding:6px;color:#64748b;">Customer Message</td><td style="padding:6px;">${escapeHtml(message)}</td></tr>
+    <tr><td style="padding:6px;color:#64748b;">Reply</td><td style="padding:6px;">${escapeHtml(reply)}</td></tr>
     <tr><td style="padding:6px;color:#64748b;">Timestamp</td><td style="padding:6px;">${now}</td></tr>
   </table>
   <p style="margin-top:16px;color:#7f1d1d;font-weight:600;">Please follow up via WhatsApp: ${WHATSAPP} as soon as possible.</p>
