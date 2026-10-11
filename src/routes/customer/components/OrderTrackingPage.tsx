@@ -25,6 +25,34 @@ const OrderTrackingPage = () => {
   const [company,  setCompany]  = useState<CompanyInfo | null>(null);
   const [loading,  setLoading]  = useState(false);
   const [error,    setError]    = useState('');
+  const [downloadingInvoice, setDownloadingInvoice] = useState(false);
+
+  const handleDownloadInvoice = async (invoicePathOrUrl: string) => {
+    if (!invoicePathOrUrl) return;
+    setDownloadingInvoice(true);
+    try {
+      let objectPath = invoicePathOrUrl;
+      const marker = '/invoices/';
+      const idx = invoicePathOrUrl.indexOf(marker);
+      if (idx >= 0) {
+        objectPath = invoicePathOrUrl.slice(idx + marker.length).split('?')[0];
+      } else if (invoicePathOrUrl.startsWith('http')) {
+        window.open(invoicePathOrUrl, '_blank', 'noopener,noreferrer');
+        return;
+      }
+      
+      const { data, error } = await supabase.storage.from('invoices').createSignedUrl(objectPath, 3600);
+      if (error || !data?.signedUrl) {
+        window.open(invoicePathOrUrl, '_blank', 'noopener,noreferrer');
+      } else {
+        window.open(data.signedUrl, '_blank', 'noopener,noreferrer');
+      }
+    } catch {
+      window.open(invoicePathOrUrl, '_blank', 'noopener,noreferrer');
+    } finally {
+      setDownloadingInvoice(false);
+    }
+  };
 
   const trackOrder = async () => {
     if (!orderId.trim()) return;
@@ -138,15 +166,14 @@ const OrderTrackingPage = () => {
 
           {/* Download button */}
           {order.invoice_pdf_url && (
-            <a
-              href={order.invoice_pdf_url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-2 bg-blue-600 text-white px-5 py-2.5 rounded-xl font-bold text-sm hover:bg-blue-700 hover:shadow-lg transition-all"
+            <button
+              onClick={() => handleDownloadInvoice(order.invoice_pdf_url!)}
+              disabled={downloadingInvoice}
+              className="inline-flex items-center gap-2 bg-blue-600 text-white px-5 py-2.5 rounded-xl font-bold text-sm hover:bg-blue-700 hover:shadow-lg transition-all disabled:opacity-50"
             >
-              <Download className="w-4 h-4" />
+              {downloadingInvoice ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
               Download Invoice PDF
-            </a>
+            </button>
           )}
         </div>
       );
