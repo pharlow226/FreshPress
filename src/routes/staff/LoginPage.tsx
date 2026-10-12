@@ -35,13 +35,19 @@ export default function LoginPage() {
   const [error,    setError]    = useState<string | null>(null);
   const [adminExists, setAdminExists] = useState<boolean | null>(null); // null = loading
 
-  // Hide setup link once any admin account exists
+  // Hide setup link once any admin account exists (fail-safe: default to true)
   useEffect(() => {
     supabase
-      .from('staff_members')
-      .select('id', { count: 'exact', head: true })
-      .eq('role', 'admin')
-      .then(({ count }) => setAdminExists((count ?? 0) > 0));
+      .rpc('has_admin')
+      .then(({ data, error }) => {
+        if (!error && data !== null) {
+          setAdminExists(Boolean(data));
+        } else {
+          // If RPC not found or errors, fail-safe to true so setup link is never exposed
+          setAdminExists(true);
+        }
+      })
+      .catch(() => setAdminExists(true));
   }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
