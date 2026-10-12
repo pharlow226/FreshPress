@@ -27,16 +27,22 @@ export default function SetupPage() {
   // Check if any admin exists
   useEffect(() => {
     (async () => {
-      const { count } = await supabase
-        .from('staff_members')
-        .select('*', { count: 'exact', head: true })
-        .eq('role', 'admin');
-
-      if ((count ?? 0) > 0) {
+      try {
+        const { data, error } = await supabase.rpc('has_admin');
+        if (!error && data === false) {
+          // Pristine database: allow setup
+          setAlreadySetup(false);
+        } else {
+          // Admin already exists, or RPC errored: lock setup and redirect
+          setAlreadySetup(true);
+          setTimeout(() => navigate('/login'), 1500);
+        }
+      } catch {
         setAlreadySetup(true);
-        setTimeout(() => navigate('/staff'), 1500);
+        setTimeout(() => navigate('/login'), 1500);
+      } finally {
+        setChecking(false);
       }
-      setChecking(false);
     })();
   }, [navigate]);
 
