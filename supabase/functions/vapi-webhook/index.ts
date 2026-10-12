@@ -235,11 +235,19 @@ async function checkOrderStatus(args: any, callerPhone: string | null) {
     const order = rows[0];
 
     // Caller Verification: Ensure caller number matches phone on order
-    if (callerPhone && order.phone) {
-      const normCaller = normalizePhoneDigits(callerPhone);
-      const normOrder  = normalizePhoneDigits(order.phone);
-      if (normCaller.length >= 7 && normOrder.length >= 7 && normCaller !== normOrder) {
-        return `For security and privacy, I can only provide order details to the phone number on file for this booking. If you are calling from a different line, please contact our team on WhatsApp at +2348113143272 with your Order ID.`;
+    const callerProvidedPhone = args.phone || args.customer_phone || null;
+    const phoneToVerify = callerPhone || callerProvidedPhone;
+
+    if (order.phone) {
+      const normOrder = normalizePhoneDigits(order.phone);
+      if (phoneToVerify) {
+        const normCandidate = normalizePhoneDigits(phoneToVerify);
+        if (normCandidate.length >= 7 && normOrder.length >= 7 && normCandidate !== normOrder) {
+          return `For security and privacy, I can only provide order details to the phone number on file for this booking. If you are calling from a different line, please contact our team on WhatsApp at +2348113143272 with your Order ID.`;
+        }
+      } else {
+        // Unknown caller ID and no phone provided
+        return `For security and privacy, please provide the phone number on file for order ${orderId} so I can verify your booking.`;
       }
     }
     

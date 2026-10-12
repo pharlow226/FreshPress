@@ -36,6 +36,23 @@ function safeEqual(a: string, b: string): boolean {
   return diff === 0;
 }
 
+// ── In-Memory IP Rate Limiter (Max 25 requests per minute per IP) ──────────────
+const ipRateMap = new Map<string, { count: number; resetAt: number }>();
+function isIpRateLimited(ip: string): boolean {
+  if (!ip || ip === 'unknown') return false;
+  const now = Date.now();
+  const entry = ipRateMap.get(ip);
+  if (!entry || now > entry.resetAt) {
+    ipRateMap.set(ip, { count: 1, resetAt: now + 60_000 });
+    return false;
+  }
+  if (entry.count >= 25) {
+    return true;
+  }
+  entry.count++;
+  return false;
+}
+
 function escapeHtml(str: string): string {
   if (!str) return '';
   return str.toString().replace(/[&<>'"]/g, 
@@ -511,6 +528,24 @@ Deno.serve(async (req: Request) => {
       return Response.json(errorReply(now), { status: 400, headers: CORS });
     }
 
+    // IP Rate Limiting: Max 25 requests per minute per IP
+    const clientIp = req.headers.get('x-forwarded-for')?.split(',')[0].trim() 
+      || req.headers.get('cf-connecting-ip') 
+      || req.headers.get('x-real-ip') 
+      || 'unknown';
+
+    if (isIpRateLimited(clientIp)) {
+      console.warn(`[SECURITY ALERT: RATE_LIMIT] Blocked high-frequency IP: ${clientIp}`);
+      return Response.json({
+        reply: "You are sending messages a bit too fast! Please wait a moment before sending your next question, or reach us on WhatsApp.",
+        topic: 'rate_limit',
+        confidence: 1.0,
+        suggested_actions: [{ label: 'WhatsApp Us', type: 'whatsapp', phone: WHATSAPP }],
+        requires_human: false,
+        timestamp: now,
+      }, { status: 429, headers: CORS });
+    }
+
     // Rate Limiting: Max 25 chat messages per session per 5 minutes
     const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
     try {
@@ -659,7 +694,7 @@ Deno.serve(async (req: Request) => {
 
     const orderInfo = buildOrderInfo(orderRow, mentionedOrderId, orderFetchError);
 
-    const historySource = chatHistory.length > 0 ? chatHistory : conversationHistory;
+    const historySource = chatHistory;
     const last6 = historySource
       .filter((m: any) => m.role === 'user' || m.role === 'assistant')
       .slice(-6);
@@ -672,7 +707,7 @@ Deno.serve(async (req: Request) => {
       }
     }
     if (!knownCustomerName) {
-      for (const m of [...chatHistory, ...conversationHistory]) {
+      for (const m of chatHistory) {
         if (m.role === 'assistant') {
           const match = (m.content || '').match(/^Hi\s+([A-Za-z\s]{2,30}?)(?:,|\!|\n)/i);
           if (match && !/there|customer|valued|friend|all/i.test(match[1])) {
@@ -944,8 +979,8 @@ Now respond.`;
 <div style="max-width:600px;margin:0 auto;background:#fff;border:2px solid #fca5a5;border-radius:12px;padding:24px;">
   <h2 style="color:#dc2626;margin-top:0;">Chat Escalation Required</h2>
   <table style="width:100%;border-collapse:collapse;font-size:14px;">
-    <tr><td style="padding:6px;color:#64748b;width:140px;">Session ID</td><td style="padding:6px;font-weight:600;">${sessionId}</td></tr>
-    <tr><td style="padding:6px;color:#64748b;">Topic</td><td style="padding:6px;font-weight:600;">${topic}</td></tr>
+    <tr><td style="padding:6px;color:#64748b;width:140px;">Session ID</td><td style="padding:6px;font-weight:600;">${escapeHtml(sessionId)}</td></tr>
+    <tr><td style="padding:6px;color:#64748b;">Topic</td><td style="padding:6px;font-weight:600;">${escapeHtml(topic)}</td></tr>
     <tr><td style="padding:6px;color:#64748b;">Customer Message</td><td style="padding:6px;">${escapeHtml(message)}</td></tr>
     <tr><td style="padding:6px;color:#64748b;">Reply</td><td style="padding:6px;">${escapeHtml(reply)}</td></tr>
     <tr><td style="padding:6px;color:#64748b;">Timestamp</td><td style="padding:6px;">${now}</td></tr>
