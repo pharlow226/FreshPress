@@ -210,9 +210,56 @@ async function getCompanyInfo(_args: any) {
 }
 
 // ── Caller Verification Guard on Order Lookups ────────────────────────────────
-async function checkOrderStatus(args: any, callerPhone: string | null) {
+const LOCKED_MSG =
+  "For security and privacy, I can only provide order details to the phone number on file for this booking. " +
+  "Please contact our team on WhatsApp at +2348113143272 with your Order ID.";
+
+const NEED_VERIFY_MSG =
+  "I could not confirm this order belongs to the caller. Ask the caller for the full phone number they used when booking, " +
+  "then call check_order_status again with order_id and verify_phone. Never read out or hint at any phone number on file.";
+
+function phoneKey(p: unknown): string {
+  const d = String(p ?? '').replace(/\D/g, '');
+  return d.length >= 10 ? d.slice(-10) : '';
+}
+
+function samePhone(a: unknown, b: unknown): boolean {
+  const ka = phoneKey(a), kb = phoneKey(b);
+  return ka !== '' && kb !== '' && safeEqual(ka, kb);
+}
+
+async function countFailures(column: 'order_id' | 'call_id', value: string, minutes: number): Promise<number> {
+  const since = new Date(Date.now() - minutes * 60_000).toISOString();
+  try {
+    const r = await fetch(
+      `${SUPABASE_URL}/rest/v1/order_lookup_failures?${column}=eq.${encodeURIComponent(value)}` +
+      `&created_at=gte.${encodeURIComponent(since)}&select=id&limit=10`,
+      { headers: dbH(), signal: AbortSignal.timeout(4000) },
+    );
+    if (!r.ok) return 0;
+    const rows = await r.json();
+    return Array.isArray(rows) ? rows.length : 0;
+  } catch (_e) {
+    return 0;
+  }
+}
+
+async function recordFailure(orderId: string, callId: string | null) {
+  try {
+    await fetch(`${SUPABASE_URL}/rest/v1/order_lookup_failures`, {
+      method: 'POST',
+      headers: dbH(),
+      body: JSON.stringify({ order_id: orderId, call_id: callId }),
+      signal: AbortSignal.timeout(4000),
+    });
+  } catch (_e) {
+    /* best effort */
+  }
+}
+
+async function checkOrderStatus(args: any, callerPhone: string | null, callId: string | null) {
   const rawId = (args.order_id || '').toString().trim();
-  
+
   if (isSpokenInjection(rawId)) {
     console.warn('[SECURITY ALERT: VOICE_INJECTION_PARAM] Blocked invalid order status query');
     return "I can only check valid FreshPress order numbers. Please provide a standard Order ID like LAU-123456.";
@@ -222,42 +269,48 @@ async function checkOrderStatus(args: any, callerPhone: string | null) {
   if (!orderId || !/^LAU-\d{6}$/i.test(orderId)) {
     return "Please provide a valid order ID in the format LAU-123456.";
   }
-  
+
+  // Lockout check: too many wrong answers on this call or on this order
+  const [callMisses, orderMisses] = await Promise.all([
+    callId ? countFailures('call_id', callId, 60) : Promise.resolve(0),
+    countFailures('order_id', orderId, 60),
+  ]);
+
+  if (callMisses >= 3 || orderMisses >= 5) {
+    console.warn(`[vapi-webhook] order lookup locked for ${orderId} (call misses: ${callMisses}, order misses: ${orderMisses})`);
+    return LOCKED_MSG;
+  }
+
   try {
     const res = await fetch(
-      `${SUPABASE_URL}/rest/v1/orders?order_id=eq.${encodeURIComponent(orderId)}&select=order_id,phone,status,payment_status,total_amount,pickup_date,pickup_time_slot,delay_reason`,
+      `${SUPABASE_URL}/rest/v1/orders?order_id=eq.${encodeURIComponent(orderId)}` +
+      `&select=order_id,phone,status,payment_status,total_amount,pickup_date,pickup_time_slot,delay_reason`,
       { headers: dbH(), signal: AbortSignal.timeout(4000) }
     );
     if (!res.ok) return "Failed to lookup order. Please call back in a moment or check on WhatsApp.";
     const rows = await res.json();
-    if (rows.length === 0) return `Order ${orderId} not found in our system.`;
-    
-    const order = rows[0];
+    const order = rows?.[0];
 
-    // Caller Verification: Ensure caller number matches phone on order
-    const callerProvidedPhone = args.phone || args.customer_phone || null;
-    const phoneToVerify = callerPhone || callerProvidedPhone;
+    // Verified if the caller's line matches OR they state the booking phone correctly
+    const verifyCandidate = args.verify_phone || args.phone || args.customer_phone;
+    const verified =
+      !!order &&
+      (samePhone(order.phone, callerPhone) || samePhone(order.phone, verifyCandidate));
 
-    if (order.phone) {
-      const normOrder = normalizePhoneDigits(order.phone);
-      if (phoneToVerify) {
-        const normCandidate = normalizePhoneDigits(phoneToVerify);
-        if (normCandidate.length >= 7 && normOrder.length >= 7 && normCandidate !== normOrder) {
-          return `For security and privacy, I can only provide order details to the phone number on file for this booking. If you are calling from a different line, please contact our team on WhatsApp at +2348113143272 with your Order ID.`;
-        }
-      } else {
-        // Unknown caller ID and no phone provided
-        return `For security and privacy, please provide the phone number on file for order ${orderId} so I can verify your booking.`;
+    if (!verified) {
+      if (verifyCandidate) {
+        await recordFailure(orderId, callId);
       }
+      return NEED_VERIFY_MSG;
     }
-    
+
     let info = `Order ${order.order_id} is currently ${order.status}. Payment is ${order.payment_status}.`;
     if (order.status === 'pending') {
       info += ` Scheduled for pickup on ${order.pickup_date} (${order.pickup_time_slot}).`;
       if (order.delay_reason) info += ` Note: Rescheduled due to ${order.delay_reason}.`;
     }
     if (order.total_amount) info += ` Total amount is ${Number(order.total_amount).toLocaleString()} Naira.`;
-    
+
     return info;
   } catch (_e) {
     return "The order lookup service took too long to respond. Please ask the caller to track their order at fresh-press-chi.vercel.app/track or contact us on WhatsApp.";
@@ -537,6 +590,7 @@ Deno.serve(async (req: Request) => {
   const callerPhone = body.message?.call?.customer?.number 
     || body.message?.call?.phoneCallProviderDetails?.from 
     || null;
+  const callId: string | null = body.message?.call?.id ?? null;
 
   try {
     const type = body.message?.type;
@@ -561,7 +615,7 @@ Deno.serve(async (req: Request) => {
         } else if (functionName === 'get_company_info') {
           resultData = await getCompanyInfo(args);
         } else if (functionName === 'check_order_status') {
-          resultData = await checkOrderStatus(args, callerPhone);
+          resultData = await checkOrderStatus(args, callerPhone, callId);
         } else if (functionName === 'create_pickup_order') {
           resultData = await createPickupOrder(args);
         } else {
