@@ -21,6 +21,7 @@ interface CompanyInfo {
 
 const OrderTrackingPage = () => {
   const [orderId,  setOrderId]  = useState('');
+  const [phone,    setPhone]    = useState('');
   const [order,    setOrder]    = useState<Order | null>(null);
   const [company,  setCompany]  = useState<CompanyInfo | null>(null);
   const [loading,  setLoading]  = useState(false);
@@ -55,18 +56,26 @@ const OrderTrackingPage = () => {
   };
 
   const trackOrder = async () => {
-    if (!orderId.trim()) return;
+    const cleanId = orderId.trim().toUpperCase();
+    const cleanPhone = phone.trim();
+    if (!cleanId || !cleanPhone) {
+      setError("We couldn't match that Order ID and phone number.");
+      return;
+    }
     setLoading(true); setError(''); setOrder(null); setCompany(null);
     try {
       const [{ data, error: dbError }, { data: companyRows }] = await Promise.all([
-        supabase.rpc('track_order', { p_order_id: orderId.trim().toUpperCase() }).single(),
+        supabase.rpc('track_order', { p_order_id: cleanId, p_phone: cleanPhone }).single(),
         supabase.from('company_info').select('account_name,account_number,bank_name,company_whatsapp').limit(1),
       ]);
-      if (dbError || !data) { setError('Order not found. Please check your Order ID.'); return; }
+      if (dbError || !data) {
+        setError("We couldn't match that Order ID and phone number.");
+        return;
+      }
       setOrder(data as Order);
       if (companyRows?.length) setCompany(companyRows[0] as CompanyInfo);
     } catch {
-      setError('Unable to track order. Please try again or call us at +234 811 314 3272');
+      setError("We couldn't match that Order ID and phone number.");
     } finally { setLoading(false); }
   };
 
@@ -186,19 +195,48 @@ const OrderTrackingPage = () => {
     <div className="max-w-2xl mx-auto">
       <div className="text-center mb-6 md:mb-8">
         <h2 className="text-3xl md:text-4xl font-black text-brand mb-2 md:mb-3">Track Your Order</h2>
-        <p className="text-muted-foreground text-base md:text-lg">Enter your Order ID to see real-time status updates</p>
+        <p className="text-muted-foreground text-base md:text-lg">Enter your Order ID and booking phone number to see real-time status updates</p>
       </div>
 
       <div className="bg-card rounded-2xl md:rounded-3xl shadow-2xl p-5 md:p-8 border-2 border-brand-accent-light mb-8">
-        <div className="flex flex-col sm:flex-row gap-3">
-          <input type="text" value={orderId} onChange={e => { setOrderId(e.target.value); if (error) setError(''); }}
-            placeholder="Enter Order ID (e.g., LAU-384921)"
-            className="flex-1 px-4 py-3 border-2 border-border rounded-xl focus:border-brand-accent focus:outline-none focus:ring-4 focus:ring-brand-accent-light transition-all bg-card text-sm md:text-base"
-            onKeyDown={e => e.key === 'Enter' && trackOrder()} disabled={loading} />
-          <button onClick={trackOrder} disabled={loading || !orderId.trim()}
-            className="bg-gradient-to-r from-brand-accent to-[hsl(240,50%,50%)] text-white px-6 py-3 rounded-xl font-bold hover:shadow-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2">
+        <div className="space-y-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-bold text-muted-foreground uppercase tracking-wider mb-1.5">
+                Order ID
+              </label>
+              <input
+                type="text"
+                value={orderId}
+                onChange={e => { setOrderId(e.target.value); if (error) setError(''); }}
+                placeholder="e.g. LAU-384921"
+                className="w-full px-4 py-3 border-2 border-border rounded-xl focus:border-brand-accent focus:outline-none focus:ring-4 focus:ring-brand-accent-light transition-all bg-card text-sm md:text-base font-medium"
+                onKeyDown={e => e.key === 'Enter' && trackOrder()}
+                disabled={loading}
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-bold text-muted-foreground uppercase tracking-wider mb-1.5">
+                Booking Phone Number
+              </label>
+              <input
+                type="tel"
+                value={phone}
+                onChange={e => { setPhone(e.target.value); if (error) setError(''); }}
+                placeholder="e.g. 08012345678"
+                className="w-full px-4 py-3 border-2 border-border rounded-xl focus:border-brand-accent focus:outline-none focus:ring-4 focus:ring-brand-accent-light transition-all bg-card text-sm md:text-base font-medium"
+                onKeyDown={e => e.key === 'Enter' && trackOrder()}
+                disabled={loading}
+              />
+            </div>
+          </div>
+          <button
+            onClick={trackOrder}
+            disabled={loading || !orderId.trim() || !phone.trim()}
+            className="w-full bg-gradient-to-r from-brand-accent to-[hsl(240,50%,50%)] text-white px-6 py-3.5 rounded-xl font-bold hover:shadow-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 text-sm md:text-base"
+          >
             {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Search className="w-5 h-5" />}
-            {loading ? 'Searching...' : 'Track'}
+            {loading ? 'Searching...' : 'Track Order'}
           </button>
         </div>
         {loading && <LoadingMessage messages={MSGS} />}
@@ -257,7 +295,12 @@ const OrderTrackingPage = () => {
             <div className="border-t border-border pt-5">
               <h4 className="font-bold text-brand mb-3 text-sm">Order Information</h4>
               <dl className="divide-y divide-border rounded-xl bg-muted/30 overflow-hidden">
-                <div className="flex justify-between gap-4 px-4 py-2.5 text-sm"><dt className="text-muted-foreground">Customer</dt><dd className="font-semibold text-foreground text-right">{order.customer_name}</dd></div>
+                {order.customer_name && (
+                  <div className="flex justify-between gap-4 px-4 py-2.5 text-sm">
+                    <dt className="text-muted-foreground">Customer</dt>
+                    <dd className="font-semibold text-foreground text-right">{order.customer_name}</dd>
+                  </div>
+                )}
                 <div className="flex justify-between gap-4 px-4 py-2.5 text-sm">
                   <dt className="text-muted-foreground">Pickup</dt>
                   <dd className="font-semibold text-foreground text-right">{order.pickup_date}
