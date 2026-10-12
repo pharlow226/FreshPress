@@ -112,6 +112,21 @@ function extractOrderId(msg: string): string | null {
   return m ? m[0].toUpperCase() : null;
 }
 
+function extractPhoneDigits(text: string): string | null {
+  if (!text) return null;
+  const match = text.match(/(?:\+?234|0)[789][01]\d{8}/);
+  if (match) {
+    const digits = match[0].replace(/\D/g, '');
+    return digits.length >= 10 ? digits.slice(-10) : null;
+  }
+  const genericMatch = text.replace(/[^\d\s]/g, '').match(/\b\d{10,14}\b/);
+  if (genericMatch) {
+    const digits = genericMatch[0].replace(/\D/g, '');
+    return digits.length >= 10 ? digits.slice(-10) : null;
+  }
+  return null;
+}
+
 // ── Anti-Prompt Injection & Jailbreak Guardrail ───────────────────────────────
 const INJECTION_PATTERNS = [
   /(ignore|disregard|forget|bypass|override)\s+(all\s+)?(the\s+)?(previous\s+|prior\s+|above\s+|system\s+|earlier\s+)?instructions/i,
@@ -668,17 +683,27 @@ Deno.serve(async (req: Request) => {
 
     // ── Step 5 — Build context ──────────────────────────────────────────────
     const detectedIntent  = detectIntent(message);
-    const mentionedOrderId = extractOrderId(message);
+    let targetOrderId = extractOrderId(message);
+    if (!targetOrderId) {
+      // Check if customer is answering a verification question with their phone number
+      for (const m of chatHistory) {
+        const pastId = extractOrderId(m.content || '');
+        if (pastId) { targetOrderId = pastId; break; }
+      }
+      if (!targetOrderId && existingOrderId) {
+        targetOrderId = existingOrderId;
+      }
+    }
     const messageCount    = chatHistory.length + conversationHistory.length;
 
-    // ── Step 6 — Fetch order by ID (tracking intent only) with Timeout ─────
+    // ── Step 6 — Fetch order by ID with Timeout & Caller Phone Verification ─
     let orderRow: any = null;
     let orderFetchError = false;
 
-    if (detectedIntent === 'tracking' && mentionedOrderId) {
+    if (targetOrderId && (detectedIntent === 'tracking' || extractPhoneDigits(message))) {
       try {
         const orderRes = await fetch(
-          `${SUPABASE_URL}/rest/v1/orders?order_id=eq.${encodeURIComponent(mentionedOrderId)}&select=order_id,customer_name,status,payment_status,pickup_date,delivery_date,total_amount,created_at,delay_reason,picked_up_at,processing_at,invoiced_at,ready_at,delivered_at,completed_at,pickup_time_slot`,
+          `${SUPABASE_URL}/rest/v1/orders?order_id=eq.${encodeURIComponent(targetOrderId)}&select=order_id,phone,customer_name,status,payment_status,pickup_date,delivery_date,total_amount,created_at,delay_reason,picked_up_at,processing_at,invoiced_at,ready_at,delivered_at,completed_at,pickup_time_slot`,
           { headers: dbH(), signal: AbortSignal.timeout(3500) },
         );
         if (orderRes.ok) {
@@ -692,7 +717,48 @@ Deno.serve(async (req: Request) => {
       }
     }
 
-    const orderInfo = buildOrderInfo(orderRow, mentionedOrderId, orderFetchError);
+    let orderInfo = "";
+    if (targetOrderId) {
+      if (orderFetchError) {
+        orderInfo = JSON.stringify({
+          found: null, fetchError: true,
+          message: `Order lookup failed due to a temporary connection issue. Direct customer to: ${SITE_URL}/track or WhatsApp: ${WHATSAPP}`,
+        });
+      } else if (!orderRow) {
+        orderInfo = JSON.stringify({ found: false, order_id: targetOrderId, track_url: `${SITE_URL}/track` });
+      } else {
+        // Order exists! Verify phone number before disclosing sensitive data
+        let candidatePhone = extractPhoneDigits(message);
+        if (!candidatePhone) {
+          for (const m of chatHistory) {
+            if (m.role === 'user') {
+              const p = extractPhoneDigits(m.content || '');
+              if (p) { candidatePhone = p; break; }
+            }
+          }
+        }
+
+        const orderPhoneDigits = orderRow.phone ? orderRow.phone.replace(/\D/g, '').slice(-10) : '';
+        if (!candidatePhone) {
+          orderInfo = JSON.stringify({
+            requires_phone_verification: true,
+            order_id: targetOrderId,
+            instruction: `For customer privacy, ask the customer: "To view tracking details for order ${targetOrderId}, what phone number did you use when booking?" Do not disclose order status, items, or amount until verified.`
+          });
+        } else if (orderPhoneDigits && candidatePhone !== orderPhoneDigits) {
+          orderInfo = JSON.stringify({
+            verified: false,
+            order_id: targetOrderId,
+            instruction: `The phone number provided does not match our records for order ${targetOrderId}. Politely ask the customer to confirm the phone number used when placing the order, or track at ${SITE_URL}/track.`
+          });
+        } else {
+          // Phone number verified!
+          orderInfo = buildOrderInfo(orderRow, targetOrderId, false);
+        }
+      }
+    } else {
+      orderInfo = buildOrderInfo(null, null, false);
+    }
 
     const historySource = chatHistory;
     const last6 = historySource
