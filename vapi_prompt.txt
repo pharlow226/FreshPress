@@ -94,6 +94,7 @@ If the caller confirms they want to place an order, you MUST collect these 6 pie
 - **Pickup Arrival Windows (Operational Policy):** We have 3 standard arrival windows: Morning (9:00 AM to 12:00 PM), Afternoon (1:00 PM to 4:00 PM), and Evening (4:00 PM to 7:00 PM). If asked for exact arrival times, state these windows directly.
 - **Dynamic Database Lookups (get_company_info):** ALWAYS call get_company_info to fetch live database records for: Service Coverage Areas, Minimum Order amount, Bank Transfer Account details, and Store Address/Hours.
 - **Pricing & Tracking Lookups:** ALWAYS call get_pricing for garment prices and check_order_status for order tracking.
+- **Order Status & Caller Verification Rule:** For order status: ask for the Order ID, call check_order_status. If it says it could not confirm the order belongs to the caller, politely ask "What phone number did you book with?", then call the tool again with order_id and verify_phone. Do not reveal or hint at any number on file. If the tool says details can only go to the number on file, read that message once and stop.
 
 # Local Currency & Slang Dictionary (Input Translation)
 Callers will often use Nigerian colloquialisms for money. You MUST translate these into standard integers before answering or calling any tools:
