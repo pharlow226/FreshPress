@@ -112,19 +112,44 @@ function extractOrderId(msg: string): string | null {
   return m ? m[0].toUpperCase() : null;
 }
 
-function extractPhoneDigits(text: string): string | null {
-  if (!text) return null;
-  const match = text.match(/(?:\+?234|0)[789][01]\d{8}/);
-  if (match) {
-    const digits = match[0].replace(/\D/g, '');
-    return digits.length >= 10 ? digits.slice(-10) : null;
-  }
-  const genericMatch = text.replace(/[^\d\s]/g, '').match(/\b\d{10,14}\b/);
-  if (genericMatch) {
-    const digits = genericMatch[0].replace(/\D/g, '');
-    return digits.length >= 10 ? digits.slice(-10) : null;
+function phoneKey(p: unknown): string {
+  const d = String(p ?? '').replace(/\D/g, '');
+  return d.length >= 10 ? d.slice(-10) : '';
+}
+
+function extractPhones(text: string): string[] {
+  const cleaned = String(text ?? '').replace(/LAU-\d{6}/gi, ' ');
+  const found = cleaned.match(/\+?\d[\d\s\-().]{8,}\d/g) ?? [];
+  return found.map(phoneKey).filter(Boolean);
+}
+
+function lastOrderIdIn(messages: any[]): string | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i]?.role !== 'user') continue;
+    const id = extractOrderId(String(messages[i].content ?? ''));
+    if (id) return id;
   }
   return null;
+}
+
+async function countFailures(column: 'order_id' | 'call_id', value: string, minutes: number): Promise<number> {
+  const since = new Date(Date.now() - minutes * 60_000).toISOString();
+  const r = await fetch(
+    `${SUPABASE_URL}/rest/v1/order_lookup_failures?${column}=eq.${encodeURIComponent(value)}` +
+    `&created_at=gte.${encodeURIComponent(since)}&select=id&limit=10`,
+    { headers: dbH(), signal: AbortSignal.timeout(4000) },
+  );
+  return r.ok ? (await r.json()).length : 0;
+}
+
+async function recordFailure(orderId: string, sessionId: string) {
+  try {
+    await fetch(`${SUPABASE_URL}/rest/v1/order_lookup_failures`, {
+      method: 'POST', headers: dbH(),
+      body: JSON.stringify({ order_id: orderId, call_id: sessionId }),
+      signal: AbortSignal.timeout(4000),
+    });
+  } catch (_e) { /* best effort */ }
 }
 
 // ── Anti-Prompt Injection & Jailbreak Guardrail ───────────────────────────────
@@ -285,7 +310,18 @@ const TIME_SLOT_LABELS: Record<string, string> = {
   evening: 'Evening (4PM-7PM)',
 };
 
-function buildOrderInfo(orderRow: any | null, orderId: string | null, fetchError: boolean): string {
+function buildOrderInfo(
+  orderRow: any | null,
+  orderId: string | null,
+  fetchError: boolean,
+  verification: 'none' | 'required' | 'locked' | 'verified' = 'none',
+): string {
+  if (verification === 'required') {
+    return JSON.stringify({ verification_required: true });
+  }
+  if (verification === 'locked') {
+    return JSON.stringify({ locked: true, whatsapp: WHATSAPP });
+  }
   if (!orderId) return JSON.stringify({ found: null, order_id: null });
   if (fetchError) {
     return JSON.stringify({
@@ -432,7 +468,10 @@ If you have all 6 pieces of information, you MUST output them in the "create_ord
 *CRITICAL GUARD*: If the conversation history shows that an order has ALREADY been successfully placed (i.e. you already gave the user an Order ID), DO NOT output the "create_order_payload" again unless the customer explicitly asks to create a SECOND, completely new order.
 
 **Formatting rules - order tracking:**
-When responding about an order, always structure the reply EXACTLY like this:
+- If the order info says verification_required: say only "To protect your privacy, what phone number did you book with?" Do not say whether the order exists. Do not reveal any order details, name, status or amount. Never reveal or hint at the phone number on file.
+- If it says locked: say "For security and privacy, I can only provide order details to the phone number on file for this booking. Please contact our team on WhatsApp at ${whatsappNum} with your Order ID." Say it once.
+- Never tell the customer about attempt limits.
+- When an order is verified, always structure the reply EXACTLY like this:
 Hi {customer_name}
 
 Order: {order_id}
@@ -683,82 +722,54 @@ Deno.serve(async (req: Request) => {
 
     // ── Step 5 — Build context ──────────────────────────────────────────────
     const detectedIntent  = detectIntent(message);
-    let targetOrderId = extractOrderId(message);
-    if (!targetOrderId) {
-      // Check if customer is answering a verification question with their phone number
-      for (const m of chatHistory) {
-        const pastId = extractOrderId(m.content || '');
-        if (pastId) { targetOrderId = pastId; break; }
-      }
-      if (!targetOrderId && existingOrderId) {
-        targetOrderId = existingOrderId;
-      }
-    }
+    const mentionedOrderId = extractOrderId(message);
     const messageCount    = chatHistory.length + conversationHistory.length;
 
-    // ── Step 6 — Fetch order by ID with Timeout & Caller Phone Verification ─
+    // ── Step 6 — Fetch order by ID & Verification ───────────────────────────
     let orderRow: any = null;
     let orderFetchError = false;
+    let verification: 'none' | 'required' | 'locked' | 'verified' = 'none';
 
-    if (targetOrderId && (detectedIntent === 'tracking' || extractPhoneDigits(message))) {
+    const historyUserMsgs = chatHistory.filter((m: any) => m.role === 'user');
+    const lookupId: string | null = mentionedOrderId ?? lastOrderIdIn(historyUserMsgs) ?? existingOrderId;
+    const phonesNow = extractPhones(message);
+    const phonesSession = [...historyUserMsgs.map((m: any) => m.content), message].flatMap(extractPhones);
+
+    if (lookupId && (detectedIntent === 'tracking' || phonesNow.length > 0)) {
       try {
-        const orderRes = await fetch(
-          `${SUPABASE_URL}/rest/v1/orders?order_id=eq.${encodeURIComponent(targetOrderId)}&select=order_id,phone,customer_name,status,payment_status,pickup_date,delivery_date,total_amount,created_at,delay_reason,picked_up_at,processing_at,invoiced_at,ready_at,delivered_at,completed_at,pickup_time_slot`,
-          { headers: dbH(), signal: AbortSignal.timeout(3500) },
-        );
-        if (orderRes.ok) {
-          const rows: any[] = await orderRes.json();
-          orderRow = rows[0] ?? null;
-        } else {
-          orderFetchError = true;
-        }
-      } catch {
-        orderFetchError = true;
-      }
-    }
+        const [callMisses, orderMisses] = await Promise.all([
+          countFailures('call_id', sessionId, 60),
+          countFailures('order_id', lookupId, 60),
+        ]);
 
-    let orderInfo = "";
-    if (targetOrderId) {
-      if (orderFetchError) {
-        orderInfo = JSON.stringify({
-          found: null, fetchError: true,
-          message: `Order lookup failed due to a temporary connection issue. Direct customer to: ${SITE_URL}/track or WhatsApp: ${WHATSAPP}`,
-        });
-      } else if (!orderRow) {
-        orderInfo = JSON.stringify({ found: false, order_id: targetOrderId, track_url: `${SITE_URL}/track` });
-      } else {
-        // Order exists! Verify phone number before disclosing sensitive data
-        let candidatePhone = extractPhoneDigits(message);
-        if (!candidatePhone) {
-          for (const m of chatHistory) {
-            if (m.role === 'user') {
-              const p = extractPhoneDigits(m.content || '');
-              if (p) { candidatePhone = p; break; }
+        if (callMisses >= 3 || orderMisses >= 5) {
+          verification = 'locked';
+        } else {
+          const orderRes = await fetch(
+            `${SUPABASE_URL}/rest/v1/orders?order_id=eq.${encodeURIComponent(lookupId)}` +
+            `&select=order_id,phone,customer_name,status,payment_status,pickup_date,delivery_date,total_amount,created_at,delay_reason,picked_up_at,processing_at,invoiced_at,ready_at,delivered_at,completed_at,pickup_time_slot`,
+            { headers: dbH(), signal: AbortSignal.timeout(6000) },
+          );
+          if (!orderRes.ok) {
+            orderFetchError = true;
+          } else {
+            const row = (await orderRes.json())[0] ?? null;
+            const ok = !!row && phonesSession.includes(phoneKey(row.phone)) && phoneKey(row.phone) !== '';
+            if (ok) {
+              orderRow = row;               // verified: safe to show
+              verification = 'verified';
+            } else {
+              verification = 'required';
+              if (phonesNow.length > 0) await recordFailure(lookupId, sessionId);  // they tried and missed
             }
           }
         }
-
-        const orderPhoneDigits = orderRow.phone ? orderRow.phone.replace(/\D/g, '').slice(-10) : '';
-        if (!candidatePhone) {
-          orderInfo = JSON.stringify({
-            requires_phone_verification: true,
-            order_id: targetOrderId,
-            instruction: `For customer privacy, ask the customer: "To view tracking details for order ${targetOrderId}, what phone number did you use when booking?" Do not disclose order status, items, or amount until verified.`
-          });
-        } else if (orderPhoneDigits && candidatePhone !== orderPhoneDigits) {
-          orderInfo = JSON.stringify({
-            verified: false,
-            order_id: targetOrderId,
-            instruction: `The phone number provided does not match our records for order ${targetOrderId}. Politely ask the customer to confirm the phone number used when placing the order, or track at ${SITE_URL}/track.`
-          });
-        } else {
-          // Phone number verified!
-          orderInfo = buildOrderInfo(orderRow, targetOrderId, false);
-        }
-      }
-    } else {
-      orderInfo = buildOrderInfo(null, null, false);
+      } catch { orderFetchError = true; }
     }
+    // NOTE: orderRow.phone is used only for the comparison. Remove it before it reaches the AI:
+    if (orderRow) delete orderRow.phone;
+
+    const orderInfo = buildOrderInfo(orderRow, lookupId, orderFetchError, verification);
 
     const historySource = chatHistory;
     const last6 = historySource
@@ -1015,7 +1026,7 @@ Now respond.`;
           messages_count:   messageCount + 2,
           last_intent:      topic,
           requires_human:   requiresHuman,
-          order_id:         parsed.created_order_id || mentionedOrderId || existingOrderId || null,
+          order_id:         parsed.created_order_id || lookupId || existingOrderId || null,
           ai_summary:       parsed.session_summary || null
         }),
       }),
