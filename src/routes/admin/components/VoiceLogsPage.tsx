@@ -35,22 +35,28 @@ function toStoragePath(value: string, callId?: string): string {
   return callId ? `${callId}.wav` : '';
 }
 
-export function RecordingPlayer({ recording, callId }: { recording: string; callId: string }) {
+export function RecordingPlayer({ recording, callId, durationSeconds }: { recording: string; callId: string; durationSeconds?: number }) {
   const [playUrl, setPlayUrl] = useState<string | null>(null);
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [failed, setFailed] = useState(false);
+  const [isExpired, setIsExpired] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
-    const path = toStoragePath(recording, callId);
-    if (!path && !recording) {
+
+    if (!recording || durationSeconds === 0) {
       setPlayUrl(null);
+      setLoading(false);
       return;
     }
 
+    const isR2Url = recording.includes('.r2.cloudflarestorage.com');
+    const path = toStoragePath(recording, callId);
+
     setLoading(true);
     setFailed(false);
+    setIsExpired(false);
 
     (async () => {
       try {
@@ -62,24 +68,30 @@ export function RecordingPlayer({ recording, callId }: { recording: string; call
           play = await bucket.createSignedUrl(`${callId}.wav`, 3600);
           dl = await bucket.createSignedUrl(`${callId}.wav`, 3600, { download: `call-${callId}.wav` });
         }
-        
+
         if (cancelled) return;
-        
-        if (play.error || !play.data?.signedUrl) {
-          if (recording && recording.startsWith('http') && !recording.includes('.r2.cloudflarestorage.com')) {
-            setPlayUrl(recording);
-            setDownloadUrl(recording);
-          } else {
-            setFailed(true);
-          }
+
+        if (play.data?.signedUrl) {
+          setPlayUrl(play.data.signedUrl);
+          setDownloadUrl(dl.data?.signedUrl || play.data.signedUrl);
           return;
         }
-        
-        setPlayUrl(play.data.signedUrl);
-        setDownloadUrl(dl.data?.signedUrl || play.data.signedUrl);
+
+        // Not in Supabase bucket — fallback to external URL if valid
+        if (recording.startsWith('http') && !isR2Url) {
+          setPlayUrl(recording);
+          setDownloadUrl(recording);
+        } else if (isR2Url) {
+          // Cloudflare R2 links from Vapi expire after the 14-day retention window
+          setIsExpired(true);
+        } else {
+          setFailed(true);
+        }
       } catch {
         if (!cancelled) {
-          if (recording && recording.startsWith('http') && !recording.includes('.r2.cloudflarestorage.com')) {
+          if (isR2Url) {
+            setIsExpired(true);
+          } else if (recording.startsWith('http')) {
             setPlayUrl(recording);
             setDownloadUrl(recording);
           } else {
@@ -92,11 +104,32 @@ export function RecordingPlayer({ recording, callId }: { recording: string; call
     })();
 
     return () => { cancelled = true; };
-  }, [recording, callId]);
+  }, [recording, callId, durationSeconds]);
 
-  if (!recording) return <p className="text-xs text-slate-500">No recording available.</p>;
-  if (failed) return <p className="text-xs text-rose-500">Recording could not be loaded.</p>;
-  if (loading || !playUrl) return <p className="text-xs text-slate-400 animate-pulse">Loading secure recording...</p>;
+  if (!recording || durationSeconds === 0) {
+    return <p className="text-xs text-slate-400 italic">No audio recorded for this call (0s duration).</p>;
+  }
+
+  if (isExpired) {
+    return (
+      <div className="p-3 bg-amber-50/70 border border-amber-200/80 rounded-xl text-xs text-amber-800 space-y-1">
+        <p className="font-semibold flex items-center gap-1.5">
+          <Clock className="w-3.5 h-3.5 text-amber-600" /> Audio Archive Unavailable
+        </p>
+        <p className="text-[11px] text-amber-700 leading-relaxed">
+          External audio link has expired (Vapi 14-day retention window). The full call transcript is preserved below.
+        </p>
+      </div>
+    );
+  }
+
+  if (failed) {
+    return <p className="text-xs text-rose-500">Recording could not be loaded.</p>;
+  }
+
+  if (loading || !playUrl) {
+    return <p className="text-xs text-slate-400 animate-pulse">Loading secure recording...</p>;
+  }
 
   return (
     <div className="space-y-2">
@@ -105,7 +138,8 @@ export function RecordingPlayer({ recording, callId }: { recording: string; call
         controls 
         preload="metadata"
         src={playUrl} 
-        className="w-full h-10 rounded-lg" 
+        className="w-full h-10 rounded-lg"
+        onError={() => setIsExpired(true)}
       >
         Your browser does not support the audio element.
       </audio>
@@ -120,6 +154,59 @@ export function RecordingPlayer({ recording, callId }: { recording: string; call
           Download recording
         </a>
       </div>
+    </div>
+  );
+}
+
+function FormattedSummary({ text }: { text: string }) {
+  if (!text) return null;
+
+  // Clean raw markdown headers and preamble if present
+  const cleanText = text
+    .replace(/^Here is a detailed,?\s*chronological summary[^\n]*\n+/i, '')
+    .replace(/^\*\*Call Summary for QA[^\n]*\*\*\n+/i, '')
+    .trim();
+
+  const lines = cleanText.split('\n').filter(l => l.trim().length > 0);
+
+  return (
+    <div className="space-y-2.5 p-3.5 rounded-xl border border-slate-200 bg-slate-50/70 text-slate-800 text-xs sm:text-sm leading-relaxed shadow-sm">
+      {lines.map((line, idx) => {
+        const trimmed = line.trim();
+
+        // Check if line is a numbered major section like **1. ...** or ###
+        const isSectionHeader = /^\*\*\d+\.\s+[^*]+\*\*:?$/.test(trimmed) || /^###?\s+/.test(trimmed);
+        if (isSectionHeader) {
+          const title = trimmed.replace(/^\*\*|\*\*:?$|^###?\s+/g, '').trim();
+          return (
+            <div key={idx} className="pt-2 pb-0.5 border-b border-slate-200/70 first:pt-0">
+              <span className="font-bold text-xs uppercase tracking-wide text-indigo-700">{title}</span>
+            </div>
+          );
+        }
+
+        // Check if line is a bullet item like * **Key:** Value
+        const isBullet = trimmed.startsWith('*') || trimmed.startsWith('-');
+        const content = isBullet ? trimmed.replace(/^[\*\-]\s+/, '') : trimmed;
+
+        // Split on bold markdown **...**
+        const parts = content.split(/(\*\*[^*]+\*\*)/g);
+
+        return (
+          <div key={idx} className={`flex items-start gap-1.5 ${isBullet ? 'pl-2' : ''}`}>
+            {isBullet && <span className="text-indigo-500 font-bold mt-0.5">•</span>}
+            <p className="text-slate-700 flex-1 leading-relaxed">
+              {parts.map((part, pIdx) => {
+                if (part.startsWith('**') && part.endsWith('**')) {
+                  const boldText = part.slice(2, -2);
+                  return <strong key={pIdx} className="font-semibold text-slate-900">{boldText}</strong>;
+                }
+                return part;
+              })}
+            </p>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -480,24 +567,23 @@ export function VoiceLogsPage() {
               </CardHeader>
               <CardContent className="p-0">
                 <div className="p-5 space-y-6 overflow-y-auto max-h-[600px]">
-                  
-                  {selectedLog.recording_url && (
-                    <div className="space-y-3">
-                      <h4 className="text-xs font-bold uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
-                        <FileAudio className="w-3.5 h-3.5 text-indigo-600" /> Audio Recording
-                      </h4>
-                      <RecordingPlayer recording={selectedLog.recording_url} callId={selectedLog.call_id} />
-                    </div>
-                  )}
+                  <div className="space-y-3">
+                    <h4 className="text-xs font-bold uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
+                      <FileAudio className="w-3.5 h-3.5 text-indigo-600" /> Audio Recording
+                    </h4>
+                    <RecordingPlayer 
+                      recording={selectedLog.recording_url} 
+                      callId={selectedLog.call_id} 
+                      durationSeconds={selectedLog.duration_seconds} 
+                    />
+                  </div>
 
                   {selectedLog.summary && (
                     <div className="space-y-2">
                       <h4 className="text-xs font-bold uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
                         <FileText className="w-3.5 h-3.5 text-indigo-600" /> AI Summary
                       </h4>
-                      <p className="text-xs sm:text-sm p-3.5 rounded-xl border border-slate-200 bg-slate-50/50 text-slate-800 leading-relaxed shadow-sm">
-                        {selectedLog.summary}
-                      </p>
+                      <FormattedSummary text={selectedLog.summary} />
                     </div>
                   )}
 
