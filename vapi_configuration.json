@@ -82,14 +82,14 @@
   ],
   "serverUrl": "https://pofiytkpduprbkmgunbg.supabase.co/functions/v1/vapi-webhook",
   "maxDurationSeconds": 600,
-  "summaryPrompt": "Write a highly detailed, chronological summary of the call for QA and Telemetry purposes.\nDo not write a generic 'happy path' summary. You MUST explicitly document the following:\n1. The user's initial intent vs. how the AI initially interpreted it.\n2. Any friction, misunderstandings, or AI UX failures.\n3. Any Speech-to-Text misquotes or slang the user used.\n4. The final resolution of the call.\nFormat the summary with brutal honesty so the engineering team can identify exactly where the conversational flow broke down.",
+  "summaryPrompt": "Summarize this call for QA in clean plain text, max 100 words.\nUse exactly these fields:\nIntent: <what the caller asked or wanted>\nOutcome: <Order booked | Price quoted | Info provided | Incomplete / Callback needed | Technical error>\nIssues: <Factual misunderstandings or transcription errors, or None>\nNotes: <Single concise factual note. Do not speculate on caller psychology or why they hung up.>",
   "firstMessageMode": "assistant-speaks-first",
   "analysisPlan": {
     "summaryPlan": {
       "enabled": true,
       "messages": [
         {
-          "content": "Write a highly detailed, chronological summary of the call for QA and Telemetry purposes. \nDo not write a generic \"happy path\" summary. You MUST explicitly document the following:\n1. The user's initial intent vs. how the AI initially interpreted it.\n2. Any friction, misunderstandings, or AI UX failures (e.g., if the AI read too much information, info-dumped, or if the user had to interrupt and correct the AI).\n3. Any Speech-to-Text misquotes or slang the user used.\n4. The final resolution of the call (e.g., Order placed, questions answered, user abandoned).\n\nFormat the summary with brutal honesty so the engineering team can identify exactly where the conversational flow broke down.",
+          "content": "Summarize this call for QA in clean plain text, max 100 words.\nUse exactly these fields:\nIntent: <what the caller asked or wanted>\nOutcome: <Order booked | Price quoted | Info provided | Incomplete / Callback needed | Technical error>\nIssues: <Factual misunderstandings or transcription errors, or None>\nNotes: <Single concise factual note. Do not speculate on caller psychology or why they hung up.>",
           "role": "system"
         },
         {
