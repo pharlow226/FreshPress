@@ -1,6 +1,23 @@
 import { useState, useEffect } from 'react';
 import { supabase } from '@/lib/supabase';
-import { PhoneCall, Clock, DollarSign, PlayCircle, FileText, RefreshCw, Calendar, FileAudio, Search } from 'lucide-react';
+import { 
+  PhoneCall, 
+  Clock, 
+  DollarSign, 
+  PlayCircle, 
+  FileText, 
+  RefreshCw, 
+  Calendar, 
+  FileAudio, 
+  Search,
+  CheckCircle2,
+  PhoneOff,
+  WifiOff,
+  VolumeX,
+  AlertTriangle,
+  Voicemail,
+  PhoneMissed
+} from 'lucide-react';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 
 interface VapiLog {
@@ -226,6 +243,164 @@ function isVoiceSecurityAlert(log: VapiLog): boolean {
   );
 }
 
+function isConnectionDropped(log: VapiLog): boolean {
+  const r = (log.ended_reason || '').toLowerCase();
+  return (
+    r.includes('audio') ||
+    r.includes('did not receive') ||
+    r.includes('silence') ||
+    r.includes('disconnect') ||
+    log.duration_seconds === 0
+  );
+}
+
+interface StatusConfig {
+  label: string;
+  tone: 'emerald' | 'blue' | 'amber' | 'rose' | 'slate';
+  icon: React.ComponentType<{ className?: string }>;
+  tooltip: string;
+}
+
+function getStatusConfig(reasonRaw?: string): StatusConfig {
+  const reason = (reasonRaw || '').toLowerCase().trim();
+
+  // 1. Connection dropped / no audio packet received from customer (WebRTC / network drop)
+  if (
+    reason.includes('audio') || 
+    reason.includes('did not receive') ||
+    reason.includes('network') ||
+    reason.includes('transport') ||
+    reason.includes('connection')
+  ) {
+    return {
+      label: 'Connection dropped',
+      tone: 'amber',
+      icon: WifiOff,
+      tooltip: reasonRaw || 'No customer audio received (browser mic permission or network drop)',
+    };
+  }
+
+  // 2. Silence timeout
+  if (reason.includes('silence')) {
+    return {
+      label: 'Silence timeout',
+      tone: 'amber',
+      icon: VolumeX,
+      tooltip: reasonRaw || 'Call timed out due to prolonged silence',
+    };
+  }
+
+  // 3. Caller hung up
+  if (reason.includes('customer-ended') || reason.includes('customer ended') || reason.includes('customer hung up')) {
+    return {
+      label: 'Caller hung up',
+      tone: 'blue',
+      icon: PhoneOff,
+      tooltip: reasonRaw || 'Customer ended the call',
+    };
+  }
+
+  // 4. Completed normally by assistant
+  if (
+    reason.includes('assistant-ended') || 
+    reason.includes('assistant ended') ||
+    reason.includes('end-call-phrase') ||
+    reason.includes('end call phrase') ||
+    reason.includes('completed')
+  ) {
+    return {
+      label: 'Completed',
+      tone: 'emerald',
+      icon: CheckCircle2,
+      tooltip: reasonRaw || 'Call concluded normally by assistant',
+    };
+  }
+
+  // 5. Voicemail
+  if (reason.includes('voicemail')) {
+    return {
+      label: 'Voicemail',
+      tone: 'slate',
+      icon: Voicemail,
+      tooltip: reasonRaw || 'Reached voicemail greeting',
+    };
+  }
+
+  // 6. No answer / Busy
+  if (reason.includes('did not answer') || reason.includes('no-answer') || reason.includes('busy')) {
+    return {
+      label: reason.includes('busy') ? 'Line busy' : 'No answer',
+      tone: 'slate',
+      icon: PhoneMissed,
+      tooltip: reasonRaw || 'Customer did not answer or line busy',
+    };
+  }
+
+  // 7. System error
+  if (reason.includes('error') || reason.includes('failed')) {
+    return {
+      label: 'System error',
+      tone: 'rose',
+      icon: AlertTriangle,
+      tooltip: reasonRaw || 'System or LLM pipeline error encountered',
+    };
+  }
+
+  // Fallback: clean raw string
+  const cleanLabel = reasonRaw
+    ? reasonRaw.replace(/[-_.]+/g, ' ').replace(/\b\w/g, c => c.toUpperCase()).trim()
+    : 'Unknown';
+
+  return {
+    label: cleanLabel || 'Unknown',
+    tone: 'slate',
+    icon: PhoneCall,
+    tooltip: reasonRaw || 'Status unknown',
+  };
+}
+
+const statusToneClasses: Record<StatusConfig['tone'], { badge: string; icon: string }> = {
+  emerald: {
+    badge: 'bg-emerald-50 text-emerald-700 border-emerald-200/80',
+    icon: 'text-emerald-600',
+  },
+  blue: {
+    badge: 'bg-blue-50 text-blue-700 border-blue-200/80',
+    icon: 'text-blue-600',
+  },
+  amber: {
+    badge: 'bg-amber-50 text-amber-700 border-amber-200/80',
+    icon: 'text-amber-600',
+  },
+  rose: {
+    badge: 'bg-rose-50 text-rose-700 border-rose-200/80',
+    icon: 'text-rose-600',
+  },
+  slate: {
+    badge: 'bg-slate-100 text-slate-700 border-slate-200',
+    icon: 'text-slate-500',
+  },
+};
+
+export function StatusBadge({ reason, size = 'sm' }: { reason: string; size?: 'sm' | 'md' }) {
+  const config = getStatusConfig(reason);
+  const Icon = config.icon;
+  const isMd = size === 'md';
+  const styling = statusToneClasses[config.tone];
+
+  return (
+    <span
+      title={config.tooltip}
+      className={`inline-flex items-center gap-1.5 rounded-full font-semibold border whitespace-nowrap select-none transition-colors ${
+        isMd ? 'px-3 py-1.5 text-xs' : 'px-2.5 py-1 text-xs'
+      } ${styling.badge}`}
+    >
+      <Icon className={`${isMd ? 'w-4 h-4' : 'w-3.5 h-3.5'} ${styling.icon} shrink-0`} />
+      <span>{config.label}</span>
+    </span>
+  );
+}
+
 export function VoiceLogsPage() {
   const [logs, setLogs] = useState<VapiLog[]>([]);
   const [loading, setLoading] = useState(true);
@@ -267,6 +442,8 @@ export function VoiceLogsPage() {
         query = query.or('summary.ilike.%Security%,summary.ilike.%injection%,summary.ilike.%jailbreak%,transcript.ilike.%ignore all instructions%,transcript.ilike.%system prompt%');
       } else if (filterType === 'orders') {
         query = query.not('order_id', 'is', null);
+      } else if (filterType === 'dropped') {
+        query = query.or('ended_reason.ilike.%audio%,ended_reason.ilike.%silence%,duration_seconds.eq.0');
       }
 
       query = query.limit(100);
@@ -307,6 +484,7 @@ export function VoiceLogsPage() {
   const filteredLogs = logs.filter(log => {
     if (filterType === 'security' && !isVoiceSecurityAlert(log)) return false;
     if (filterType === 'orders' && !log.order_id) return false;
+    if (filterType === 'dropped' && !isConnectionDropped(log)) return false;
     if (!searchQuery.trim()) return true;
     const q = searchQuery.toLowerCase();
     return (
@@ -465,6 +643,13 @@ export function VoiceLogsPage() {
           >
             With Orders
           </button>
+          <button 
+            onClick={() => setFilterType('dropped')}
+            className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 ${filterType === 'dropped' ? 'bg-amber-50 text-amber-700 shadow-sm border border-amber-200' : 'text-slate-600 hover:bg-slate-50'}`}
+          >
+            <WifiOff className="w-3.5 h-3.5 text-amber-600" />
+            Connection Dropped
+          </button>
         </div>
 
         <div className="relative min-w-[240px]">
@@ -510,15 +695,18 @@ export function VoiceLogsPage() {
                   </tr>
                 ) : (
                   filteredLogs.map((log) => {
+                    const isZeroDuration = log.duration_seconds === 0;
                     return (
                       <tr 
                         key={log.id} 
-                        className={`hover:bg-indigo-50/40 cursor-pointer transition-colors ${selectedLog?.id === log.id ? 'bg-indigo-50/70 border-l-4 border-indigo-600' : 'border-l-4 border-transparent'}`}
+                        className={`hover:bg-indigo-50/40 cursor-pointer transition-colors ${
+                          isZeroDuration ? 'opacity-75 bg-slate-50/40' : ''
+                        } ${selectedLog?.id === log.id ? 'bg-indigo-50/70 border-l-4 border-indigo-600' : 'border-l-4 border-transparent'}`}
                         onClick={() => setSelectedLog(log)}
                       >
                         <td className="px-5 py-4 whitespace-nowrap">
                           <div className="flex items-center gap-2">
-                            <Calendar className="w-4 h-4 text-slate-400" />
+                            <Calendar className="w-4 h-4 text-slate-400 shrink-0" />
                             <span className="font-medium text-slate-900 text-xs sm:text-sm">
                               {new Date(log.created_at).toLocaleDateString()}
                             </span>
@@ -527,19 +715,22 @@ export function VoiceLogsPage() {
                             </span>
                           </div>
                         </td>
-                        <td className="px-5 py-4 font-medium text-slate-900 text-xs sm:text-sm">
-                          {log.phone_number || <span className="text-indigo-600 bg-indigo-50 px-2 py-1 rounded-md text-xs font-medium">Website Visitor</span>}
+                        <td className="px-5 py-4 font-medium text-slate-900 text-xs sm:text-sm whitespace-nowrap">
+                          {log.phone_number || (
+                            <span className="inline-flex items-center text-indigo-700 bg-indigo-50 border border-indigo-100 px-2 py-0.5 rounded-md text-xs font-medium">
+                              Website Visitor
+                            </span>
+                          )}
                         </td>
-                        <td className="px-5 py-4 text-slate-600 text-xs sm:text-sm">
-                          {Math.floor(log.duration_seconds / 60)}m {Math.floor(log.duration_seconds % 60)}s
+                        <td className="px-5 py-4 text-slate-600 text-xs sm:text-sm whitespace-nowrap">
+                          {isZeroDuration ? (
+                            <span className="text-slate-400 italic font-mono text-xs">0s (dropped)</span>
+                          ) : (
+                            `${Math.floor(log.duration_seconds / 60)}m ${Math.floor(log.duration_seconds % 60)}s`
+                          )}
                         </td>
-                        <td className="px-5 py-4">
-                          <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold ${
-                            log.ended_reason.includes('customer') ? 'bg-slate-100 text-slate-700' : 
-                            log.ended_reason.includes('assistant') ? 'bg-indigo-50 text-indigo-700' : 'bg-slate-100 text-slate-600'
-                          }`}>
-                            {log.ended_reason.replace(/-/g, ' ')}
-                          </span>
+                        <td className="px-5 py-4 whitespace-nowrap">
+                          <StatusBadge reason={log.ended_reason} />
                         </td>
                       </tr>
                     );
@@ -554,16 +745,26 @@ export function VoiceLogsPage() {
         <div className="lg:col-span-1">
           {selectedLog ? (
             <Card className="sticky top-20 shadow-sm border-slate-200 overflow-hidden">
-              <CardHeader className="border-b bg-slate-50/80 pb-4">
-                <CardTitle className="text-base flex items-center justify-between text-slate-900">
-                  <span className="font-bold flex items-center gap-2">
+              <CardHeader className="border-b bg-slate-50/80 pb-4 space-y-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <CardTitle className="text-base font-bold text-slate-900">
                     Call Details
-                  </span>
+                  </CardTitle>
                   <span className="text-xs font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-lg">
                     ${Number(selectedLog.cost).toFixed(3)}
                   </span>
-                </CardTitle>
-                <p className="text-xs text-slate-500 font-mono mt-1 select-all">Call ID: {selectedLog.call_id}</p>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2 pt-1">
+                  <StatusBadge reason={selectedLog.ended_reason} size="md" />
+                  <span className="text-xs text-slate-500 font-medium">
+                    • {selectedLog.duration_seconds === 0 ? '0s (dropped)' : `${Math.floor(selectedLog.duration_seconds / 60)}m ${Math.floor(selectedLog.duration_seconds % 60)}s`}
+                  </span>
+                </div>
+
+                <p className="text-[11px] text-slate-400 font-mono select-all truncate" title={selectedLog.call_id}>
+                  Call ID: {selectedLog.call_id}
+                </p>
               </CardHeader>
               <CardContent className="p-0">
                 <div className="p-5 space-y-6 overflow-y-auto max-h-[600px]">
